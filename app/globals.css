@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html, body {
+  background: #FAF6F0;
+  color: #2A1F1A;
+  font-feature-settings: 'ss01', 'ss02';
+}
+
+body {
+  font-family: var(--font-inter), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Subtle paper-grain texture on the page background for warmth */
+.bg-paper {
+  background-color: #FAF6F0;
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(92, 26, 27, 0.025) 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+/* Hairline rule used between sections */
+.rule {
+  height: 1px;
+  background: linear-gradient(to right, transparent, #E3D5BD 20%, #E3D5BD 80%, transparent);
+}
+
+/* Tabular numbers for ingredient quantities */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Wordmark base */
+.wordmark {
+  font-family: var(--font-fraunces), Georgia, serif;
+  font-weight: 500;
+  font-style: italic;
+  letter-spacing: 0.02em;
+}
+
+/* Page-load fade for content cards */
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.rise-in {
+  animation: riseIn 0.5s ease-out both;
+}
+
+/* Stagger helpers */
+.delay-1 { animation-delay: 0.05s; }
+.delay-2 { animation-delay: 0.10s; }
+.delay-3 { animation-delay: 0.15s; }
+.delay-4 { animation-delay: 0.20s; }
+.delay-5 { animation-delay: 0.25s; }
+.delay-6 { animation-delay: 0.30s; }
