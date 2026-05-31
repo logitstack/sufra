@@ -121,7 +121,10 @@ export async function cookRecipe(recipeId: string, servingsMade: number) {
     const used = scale(normalizeWithDensity(ri.quantity, ri.unit, density), scaleFactor);
     const have = normalizeWithDensity(pantryRow.quantity_on_hand, pantryRow.unit, density);
 
-    if (used.type !== have.type) continue;  // Skip incompatible units
+    // Density already collapses volume<->weight above, so a tsp recipe meets a
+    // grams pantry. What remains incompatible (e.g. a count vs a measured unit)
+    // can't be subtracted safely, so skip it rather than guess.
+    if (used.type !== have.type) continue;
 
     // Convert back to pantry's unit and update
     const remaining = subtract(have, used);

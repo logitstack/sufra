@@ -145,7 +145,12 @@ export async function generateShoppingList(planId: string): Promise<{ id: string
     }
   }
 
-  // Subtract pantry
+  // Subtract pantry. We only subtract on an exact ingredient match where the
+  // pantry quantity normalizes to the same measurement type as the recipe's
+  // (density collapses volume<->weight, so e.g. cumin in tsp meets cumin in g).
+  // Incomparable units (a count of "garlic" vs a tsp recipe) and related-but-
+  // different ingredients are intentionally left on the list — the shopping
+  // page surfaces those as pantry suggestions instead of guessing the math.
   const { data: pantry } = await supabase
     .from('pantry')
     .select('ingredient_id, quantity_on_hand, unit')

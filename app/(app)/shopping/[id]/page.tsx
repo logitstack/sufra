@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { createServerSupabase } from '@/app/lib/supabase-server';
 import { shoppingDisplay, type NormalizedQuantity } from '@/app/lib/units';
+import { relatedPantry, type PantryRowForMatch } from '@/app/lib/pantry-match';
 import ShoppingClient from './shopping-client';
 
 export const dynamic = 'force-dynamic';
@@ -26,7 +27,7 @@ export default async function ShoppingDetailPage({ params }: { params: { id: str
     .select(`
       id, generated_at, completed_at, plan_id,
       shopping_items (
-        id, quantity_needed, unit, checked, store_section,
+        id, ingredient_id, quantity_needed, unit, checked, store_section,
         ingredients ( canonical_name, category, density_g_per_ml )
       ),
       meal_plans ( name, start_date, end_date )
@@ -35,6 +36,24 @@ export default async function ShoppingDetailPage({ params }: { params: { id: str
     .single();
 
   if (!list) notFound();
+
+  // Pantry, used to suggest substitutes for items precise subtraction couldn't
+  // cover (related ingredient or incomparable unit). RLS scopes this to the user.
+  const { data: pantryRows } = await supabase
+    .from('pantry')
+    .select('ingredient_id, quantity_on_hand, unit, ingredients ( canonical_name )');
+
+  const pantry: PantryRowForMatch[] = (((pantryRows ?? []) as unknown) as Array<{
+    ingredient_id: string;
+    quantity_on_hand: number;
+    unit: string | null;
+    ingredients: { canonical_name: string } | null;
+  }>).map(p => ({
+    ingredient_id: p.ingredient_id,
+    quantity_on_hand: p.quantity_on_hand,
+    unit: p.unit,
+    canonical_name: p.ingredients?.canonical_name ?? ''
+  }));
 
   type Item = {
     id: string;
@@ -45,10 +64,12 @@ export default async function ShoppingDetailPage({ params }: { params: { id: str
     basePerUnit: number;  // editedValue * basePerUnit -> stored base quantity
     section: string;
     checked: boolean;
+    suggestions: string[];  // "In pantry: …" hints from related/incomparable pantry items
   };
 
   const items: Item[] = (((list.shopping_items ?? []) as unknown) as Array<{
     id: string;
+    ingredient_id: string;
     quantity_needed: number;
     unit: string;
     checked: boolean;
@@ -72,7 +93,11 @@ export default async function ShoppingDetailPage({ params }: { params: { id: str
       qtyUnit: disp.unit,
       basePerUnit: disp.basePerUnit,
       section: si.store_section || category,
-      checked: si.checked
+      checked: si.checked,
+      suggestions: relatedPantry(
+        { ingredient_id: si.ingredient_id, name, type: normalized.type, density },
+        pantry
+      )
     };
   });
 
