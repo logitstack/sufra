@@ -13,6 +13,7 @@ type Item = {
   basePerUnit: number;
   section: string;
   checked: boolean;
+  suggestions: string[];
 };
 type Section = { key: string; label: string; items: Item[] };
 
@@ -139,8 +140,9 @@ export default function ShoppingClient({
                 return (
                   <li key={item.id}>
                     <div
-                      className={`w-full flex items-center justify-between gap-3 py-2.5 px-3 bg-white border rounded-sm transition ${checked ? 'border-beige-200 opacity-50' : 'border-beige-200 hover:border-maroon-300'}`}
+                      className={`w-full py-2.5 px-3 bg-white border rounded-sm transition ${checked ? 'border-beige-200 opacity-50' : 'border-beige-200 hover:border-maroon-300'}`}
                     >
+                     <div className="flex items-center justify-between gap-3">
                       <button
                         onClick={() => toggle(item, !checked)}
                         className="flex items-center gap-3 min-w-0 flex-1 text-left"
@@ -169,6 +171,20 @@ export default function ShoppingClient({
                           </button>
                         )}
                       </div>
+                     </div>
+                      {!checked && item.suggestions.length > 0 && (
+                        <ul className="mt-1.5 pl-8 space-y-0.5">
+                          {item.suggestions.map((s, i) => (
+                            <li key={i} className="flex items-start gap-1.5 text-[11px] leading-snug text-beige-700">
+                              <svg viewBox="0 0 24 24" className="w-3 h-3 mt-0.5 flex-shrink-0 text-maroon-300" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M9 14 4 9l5-5" />
+                                <path d="M4 9h11a4 4 0 0 1 0 8h-1" />
+                              </svg>
+                              <span>{s}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                     </div>
                   </li>
                 );
