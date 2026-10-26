@@ -30,7 +30,7 @@ export default async function RecipeDetailPage({ params }: { params: { id: strin
   // RLS lets us see owned recipes and shared ones
   const { data: recipe, error } = await supabase
     .from('recipes')
-    .select('*, recipe_ingredients(quantity, unit, prep_note, order_index, raw_text, ingredients(canonical_name)), recipe_steps(step_number, content)')
+    .select('*, recipe_ingredients(quantity, unit, prep_note, order_index, raw_text, display_name, ingredients(canonical_name)), recipe_steps(step_number, content)')
     .eq('id', params.id)
     .single();
 
@@ -139,7 +139,7 @@ export default async function RecipeDetailPage({ params }: { params: { id: strin
                       </span>
                     )}
                     <span className="text-ink/85">
-                      {ing.ingredients?.canonical_name ?? ing.raw_text ?? ''}
+                      {ing.display_name ?? ing.ingredients?.canonical_name ?? ing.raw_text ?? ''}
                     </span>
                     {ing.prep_note && <span className="text-beige-700 italic">, {ing.prep_note}</span>}
                   </div>

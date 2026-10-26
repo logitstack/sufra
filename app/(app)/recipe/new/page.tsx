@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { CATEGORY_LABEL, type Category } from '@/app/lib/types';
@@ -11,6 +11,7 @@ import { importFromUrl, importFromText, importFromImageBase64 } from './import-a
 import type { ExtractedRecipe } from '@/app/lib/recipe-extractor';
 
 const CATEGORIES: Category[] = ['meat', 'vegetarian', 'baked_goods', 'desserts', 'drinks'];
+const PREFILL_KEY = 'sufra:recipe-prefill';
 
 const COMMON_UNITS = [
   { value: '',      label: '—' },
@@ -25,7 +26,17 @@ const COMMON_UNITS = [
   { value: 'oz',    label: 'oz' },
   { value: 'lb',    label: 'lb' },
   { value: 'pinch', label: 'pinch' },
-  { value: 'bunch', label: 'bunch' }
+  { value: 'dash',  label: 'dash' },
+  { value: 'bunch', label: 'bunch' },
+  { value: 'clove', label: 'clove' },
+  { value: 'head',  label: 'head' },
+  { value: 'can',   label: 'can' },
+  { value: 'stick', label: 'stick' },
+  { value: 'package', label: 'package' },
+  { value: 'jar',   label: 'jar' },
+  { value: 'slice', label: 'slice' },
+  { value: 'inch',  label: 'inch' },
+  { value: 'sprig', label: 'sprig' }
 ];
 
 const CUISINE_SUGGESTIONS = ['Pakistani', 'Indian', 'Levantine', 'Mediterranean', 'American', 'Mexican', 'East Asian', 'Italian', 'French'];
@@ -121,6 +132,20 @@ export default function NewRecipePage() {
     }
     setImportMode(null);
   }
+
+  // A recipe handed over from another page (e.g. a Claude suggestion on the
+  // "What can I make" page) lands here for the same review-and-save step.
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(PREFILL_KEY);
+      if (!raw) return;
+      sessionStorage.removeItem(PREFILL_KEY);
+      applyExtracted(JSON.parse(raw) as ExtractedRecipe);
+    } catch {
+      // Storage unavailable or bad data: start with an empty form.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleImportUrl() {
     setImporting(true); setImportError('');

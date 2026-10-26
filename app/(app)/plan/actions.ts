@@ -3,7 +3,8 @@
 import { createServerSupabase } from '@/app/lib/supabase-server';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import { normalizeWithDensity, subtract, add, type NormalizedQuantity } from '@/app/lib/units';
+import { addToNeed, emptyNeed, toBase, type Need } from '@/app/lib/units';
+import { loadIngredientUnits } from '@/app/lib/ingredients';
 
 export type PlanItemInput = {
   recipe_id: string;
@@ -65,108 +66,73 @@ export async function deletePlan(planId: string) {
 
 /**
  * Generate a shopping list from a plan.
- * For each plan_item: pull recipe_ingredients, scale by (times_per_period * servings_per_time / recipe.servings_yield).
- * Aggregate by ingredient_id, then subtract pantry quantities.
+ *
+ * Every recipe amount is scaled by (times_per_period * servings_per_time /
+ * servings_yield) and converted to the ingredient's base unit (grams or a
+ * count), so the same ingredient always becomes ONE line no matter which units
+ * the recipes used. Amounts with no known conversion ("1 can" of something
+ * with no can size yet) stay on that same line as unresolved parts, and the
+ * shopping page asks for the missing size once.
  */
 export async function generateShoppingList(planId: string): Promise<{ id: string }> {
   const supabase = createServerSupabase();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
-  // Fetch plan items with recipes and ingredients
   const { data: planItems, error: piError } = await supabase
     .from('plan_items')
     .select(`
       times_per_period,
       servings_per_time,
       recipes (
-        id,
         servings_yield,
-        recipe_ingredients (
-          quantity,
-          unit,
-          ingredient_id,
-          ingredients ( canonical_name, category, density_g_per_ml )
-        )
+        recipe_ingredients ( quantity, unit, ingredient_id )
       )
     `)
     .eq('plan_id', planId);
   if (piError) throw new Error(`Could not load plan: ${piError.message}`);
   if (!planItems || planItems.length === 0) throw new Error('Plan has no items');
 
-  // Aggregate
-  type AggKey = string;
-  const aggregate = new Map<AggKey, {
-    ingredientId: string;
-    canonical: string;
-    category: string;
-    density: number | null;
-    byType: Map<string, NormalizedQuantity>;  // type -> normalized
-  }>();
-
-  for (const item of (planItems as unknown) as Array<{
+  const items = (planItems as unknown) as Array<{
     times_per_period: number;
     servings_per_time: number;
     recipes: {
-      id: string;
       servings_yield: number;
-      recipe_ingredients: Array<{
-        quantity: number | null;
-        unit: string | null;
-        ingredient_id: string;
-        ingredients: { canonical_name: string; category: string; density_g_per_ml: number | null };
-      }>;
+      recipe_ingredients: Array<{ quantity: number | null; unit: string | null; ingredient_id: string }>;
     } | null;
-  }>) {
+  }>;
+
+  const ingredientIds = items.flatMap(i => i.recipes?.recipe_ingredients.map(ri => ri.ingredient_id) ?? []);
+  const units = await loadIngredientUnits(supabase, ingredientIds, user.id);
+
+  // Aggregate by ingredient only.
+  const needs = new Map<string, Need>();
+  for (const item of items) {
     if (!item.recipes) continue;
-    const recipe = item.recipes;
-    const scaleFactor = (item.times_per_period * item.servings_per_time) / Math.max(1, recipe.servings_yield);
-
-    for (const ri of recipe.recipe_ingredients ?? []) {
-      if (ri.quantity === null) continue;
-      const density = ri.ingredients?.density_g_per_ml ?? null;
-      const scaled = ri.quantity * scaleFactor;
-      const norm = normalizeWithDensity(scaled, ri.unit, density);
-      const key = ri.ingredient_id;
-
-      let entry = aggregate.get(key);
-      if (!entry) {
-        entry = {
-          ingredientId: ri.ingredient_id,
-          canonical: ri.ingredients?.canonical_name ?? 'unknown',
-          category: ri.ingredients?.category ?? 'other',
-          density,
-          byType: new Map()
-        };
-        aggregate.set(key, entry);
-      }
-      const existing = entry.byType.get(norm.type);
-      entry.byType.set(norm.type, existing ? add(existing, norm) : norm);
+    const scaleFactor = (item.times_per_period * item.servings_per_time) / Math.max(1, item.recipes.servings_yield);
+    for (const ri of item.recipes.recipe_ingredients ?? []) {
+      if (ri.quantity === null) continue;  // "to taste"
+      const ing = units.get(ri.ingredient_id);
+      if (!ing) continue;
+      const need = needs.get(ri.ingredient_id) ?? emptyNeed();
+      needs.set(ri.ingredient_id, addToNeed(need, Number(ri.quantity) * scaleFactor, ri.unit, ing));
     }
   }
 
-  // Subtract pantry. We only subtract on an exact ingredient match where the
-  // pantry quantity normalizes to the same measurement type as the recipe's
-  // (density collapses volume<->weight, so e.g. cumin in tsp meets cumin in g).
-  // Incomparable units (a count of "garlic" vs a tsp recipe) and related-but-
-  // different ingredients are intentionally left on the list — the shopping
-  // page surfaces those as pantry suggestions instead of guessing the math.
+  // Subtract pantry in base units. A pantry row in a unit we can't convert is
+  // left alone; the shopping page shows it as a hint under the item.
   const { data: pantry } = await supabase
     .from('pantry')
     .select('ingredient_id, quantity_on_hand, unit')
     .eq('user_id', user.id);
-
+  const pantryBase = new Map<string, number>();
   for (const p of pantry ?? []) {
-    const entry = aggregate.get(p.ingredient_id);
-    if (!entry) continue;
-    const have = normalizeWithDensity(p.quantity_on_hand, p.unit, entry.density);
-    const needed = entry.byType.get(have.type);
-    if (needed) {
-      entry.byType.set(have.type, subtract(needed, have));
-    }
+    const ing = units.get(p.ingredient_id);
+    if (!ing || !needs.has(p.ingredient_id)) continue;
+    const base = toBase(Number(p.quantity_on_hand), p.unit, ing);
+    if (base != null) pantryBase.set(p.ingredient_id, (pantryBase.get(p.ingredient_id) ?? 0) + base);
   }
 
-  // Create shopping list
   const { data: list, error: listError } = await supabase
     .from('shopping_lists')
     .insert({ user_id: user.id, plan_id: planId })
@@ -174,25 +140,20 @@ export async function generateShoppingList(planId: string): Promise<{ id: string
     .single();
   if (listError || !list) throw new Error(`Could not create list: ${listError?.message}`);
 
-  // Insert items
-  const itemRows: Array<{
-    list_id: string;
-    ingredient_id: string;
-    quantity_needed: number;
-    unit: string;
-    store_section: string;
-  }> = [];
-  for (const entry of Array.from(aggregate.values())) {
-    for (const [type, q] of Array.from(entry.byType.entries())) {
-      if (q.value <= 0) continue;  // Pantry covers it
-      itemRows.push({
-        list_id: list.id,
-        ingredient_id: entry.ingredientId,
-        quantity_needed: q.value,
-        unit: type === 'volume' ? 'ml' : type === 'weight' ? 'g' : (q.originalUnit || ''),
-        store_section: entry.category
-      });
-    }
+  const itemRows = [];
+  for (const [ingredientId, need] of Array.from(needs.entries())) {
+    const ing = units.get(ingredientId)!;
+    const net = Math.max(0, need.base - (pantryBase.get(ingredientId) ?? 0));
+    if (net <= 1e-9 && need.unresolved.length === 0) continue;  // Pantry covers it
+    itemRows.push({
+      list_id: list.id,
+      ingredient_id: ingredientId,
+      quantity_needed: net,
+      gross_base: need.base,
+      unit: ing.base_unit,
+      unresolved: need.unresolved,
+      store_section: ing.category
+    });
   }
 
   if (itemRows.length > 0) {

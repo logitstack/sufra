@@ -118,6 +118,7 @@ export async function forkRecipe(recipeId: string) {
     const ingRows = original.recipe_ingredients.map((ri: any) => ({
       recipe_id: copy.id,
       ingredient_id: ri.ingredient_id,
+      display_name: ri.display_name,
       quantity: ri.quantity,
       unit: ri.unit,
       prep_note: ri.prep_note,

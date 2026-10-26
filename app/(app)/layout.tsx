@@ -2,6 +2,10 @@ import Link from 'next/link';
 import { createServerSupabase } from '@/app/lib/supabase-server';
 import UserMenu from '@/components/UserMenu';
 
+// Claude calls (recipe import, receipts, suggestions) can take longer than the
+// default function timeout.
+export const maxDuration = 60;
+
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const supabase = createServerSupabase();
   const { data: { user } } = await supabase.auth.getUser();
@@ -18,6 +22,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <NavLink href="/library" label="Library" />
             <NavLink href="/plan" label="Plan" />
             <NavLink href="/pantry" label="Pantry" />
+            <NavLink href="/cook" label="Cook" />
             <NavLink href="/shopping" label="List" />
           </nav>
 

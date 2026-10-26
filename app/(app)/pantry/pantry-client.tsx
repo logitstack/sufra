@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { addPantryItem, updatePantryItem, deletePantryItem } from './actions';
 import type { PantryRow } from './page';
@@ -17,7 +18,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   other: 'Other'
 };
 
-const UNITS = ['', 'tsp', 'tbsp', 'cup', 'fl_oz', 'ml', 'l', 'g', 'kg', 'oz', 'lb', 'pinch', 'bunch'];
+const UNITS = ['', 'tsp', 'tbsp', 'cup', 'fl_oz', 'ml', 'l', 'g', 'kg', 'oz', 'lb', 'pinch', 'bunch', 'clove', 'head', 'can', 'stick', 'package', 'jar'];
 
 export default function PantryClient({ rows }: { rows: PantryRow[] }) {
   const router = useRouter();
@@ -51,15 +52,32 @@ export default function PantryClient({ rows }: { rows: PantryRow[] }) {
             What's <em className="font-medium">on hand</em>.
           </h1>
         </div>
-        <button
-          onClick={() => setAddOpen(true)}
-          className="inline-flex items-center gap-2 px-5 py-2.5 bg-maroon-900 text-beige-50 rounded-sm hover:bg-maroon-700 transition text-sm font-medium"
-        >
-          <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5">
-            <path d="M12 5v14M5 12h14" />
-          </svg>
-          Add item
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <Link
+            href="/pantry/receipt"
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-maroon-900 text-beige-50 rounded-sm hover:bg-maroon-700 transition text-sm font-medium"
+          >
+            <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M6 2h12v20l-3-2-3 2-3-2-3 2V2Z" /><path d="M9 7h6M9 11h6M9 15h4" />
+            </svg>
+            Scan receipt
+          </Link>
+          <Link
+            href="/pantry/receipt?mode=list"
+            className="inline-flex items-center gap-2 px-4 py-2.5 border border-beige-300 text-maroon-900 rounded-sm hover:border-maroon-700 transition text-sm"
+          >
+            Type what you bought
+          </Link>
+          <button
+            onClick={() => setAddOpen(true)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 border border-beige-300 text-maroon-900 rounded-sm hover:border-maroon-700 transition text-sm"
+          >
+            <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            Add item
+          </button>
+        </div>
       </div>
 
       {rows.length === 0 ? (
@@ -118,17 +136,17 @@ export default function PantryClient({ rows }: { rows: PantryRow[] }) {
 
 function PantryRowEditor({ row, onChange }: { row: PantryRow; onChange: () => void }) {
   const [editing, setEditing] = useState(false);
-  const [qty, setQty] = useState(String(row.quantity_on_hand));
+  const [qty, setQty] = useState(String(row.editValue));
   const [exp, setExp] = useState(row.expiration_date ?? '');
   const [saving, setSaving] = useState(false);
 
   const isExpired = row.expiration_date && new Date(row.expiration_date) < new Date();
-  const isEmpty = row.quantity_on_hand === 0;
+  const isEmpty = row.isEmpty;
 
   async function handleSave() {
     setSaving(true);
     try {
-      await updatePantryItem(row.id, parseFloat(qty) || 0, exp || null);
+      await updatePantryItem(row.id, parseFloat(qty) || 0, row.editUnit || null, exp || null);
       setEditing(false);
       onChange();
     } catch (err) {
@@ -155,7 +173,7 @@ function PantryRowEditor({ row, onChange }: { row: PantryRow; onChange: () => vo
           onChange={e => setQty(e.target.value)}
           className="w-20 px-2 py-1.5 bg-beige-50 border border-beige-200 rounded-sm text-sm tnum text-center focus:outline-none focus:border-maroon-700"
         />
-        <span className="text-xs text-beige-700 tnum">{row.unit ?? ''}</span>
+        <span className="text-xs text-beige-700 tnum">{row.editUnit.replace('_', ' ')}</span>
         <input
           type="date"
           value={exp}
@@ -179,7 +197,7 @@ function PantryRowEditor({ row, onChange }: { row: PantryRow; onChange: () => vo
       </div>
       <div className="flex items-center gap-3 flex-shrink-0">
         <span className="text-sm text-maroon-900 font-medium tnum">
-          {row.quantity_on_hand} {row.unit ?? ''}
+          {row.amountText}
         </span>
         <button
           onClick={() => setEditing(true)}
@@ -258,7 +276,7 @@ function AddPantryModal({ onClose, onSaved }: { onClose: () => void; onSaved: ()
                 onChange={e => setUnit(e.target.value)}
                 className="w-full px-3 py-2 bg-white border border-beige-200 rounded-sm text-sm focus:outline-none focus:border-maroon-700 focus:ring-1 focus:ring-maroon-700 transition"
               >
-                {UNITS.map(u => <option key={u} value={u}>{u || '—'}</option>)}
+                {UNITS.map(u => <option key={u} value={u}>{u ? u.replace('_', ' ') : 'count'}</option>)}
               </select>
             </div>
           </div>
