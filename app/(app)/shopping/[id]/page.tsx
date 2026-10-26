@@ -1,9 +1,13 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { createServerSupabase } from '@/app/lib/supabase-server';
-import { shoppingDisplay, type NormalizedQuantity } from '@/app/lib/units';
+import {
+  commonSizes, conversionQuestion, cookingDisplay, formatAmount, formatUnresolved, purchaseDisplay, sizeForEdit, toBase,
+  type IngredientUnits, type UnresolvedPart
+} from '@/app/lib/units';
+import { loadIngredientUnits } from '@/app/lib/ingredients';
 import { relatedPantry, type PantryRowForMatch } from '@/app/lib/pantry-match';
-import ShoppingClient from './shopping-client';
+import ShoppingClient, { type BuyPrefill, type ShoppingItem } from './shopping-client';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,14 +25,15 @@ const SECTION_LABELS: Record<string, string> = {
 
 export default async function ShoppingDetailPage({ params }: { params: { id: string } }) {
   const supabase = createServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) notFound();
 
   const { data: list } = await supabase
     .from('shopping_lists')
     .select(`
       id, generated_at, completed_at, plan_id,
       shopping_items (
-        id, ingredient_id, quantity_needed, unit, checked, store_section,
-        ingredients ( canonical_name, category, density_g_per_ml )
+        id, ingredient_id, quantity_needed, unit, unresolved, checked, store_section
       ),
       meal_plans ( name, start_date, end_date )
     `)
@@ -38,67 +43,77 @@ export default async function ShoppingDetailPage({ params }: { params: { id: str
   if (!list) notFound();
 
   // Pantry, used to suggest substitutes for items precise subtraction couldn't
-  // cover (related ingredient or incomparable unit). RLS scopes this to the user.
+  // cover (related ingredient or a unit with no known conversion).
   const { data: pantryRows } = await supabase
     .from('pantry')
-    .select('ingredient_id, quantity_on_hand, unit, ingredients ( canonical_name )');
+    .select('ingredient_id, quantity_on_hand, unit, ingredients ( canonical_name )')
+    .eq('user_id', user.id);
 
-  const pantry: PantryRowForMatch[] = (((pantryRows ?? []) as unknown) as Array<{
+  const listItems = ((list.shopping_items ?? []) as unknown) as Array<{
+    id: string;
+    ingredient_id: string;
+    quantity_needed: number;
+    unit: string | null;
+    unresolved: UnresolvedPart[] | null;
+    checked: boolean;
+    store_section: string | null;
+  }>;
+  const pantryList = ((pantryRows ?? []) as unknown) as Array<{
     ingredient_id: string;
     quantity_on_hand: number;
     unit: string | null;
     ingredients: { canonical_name: string } | null;
-  }>).map(p => ({
-    ingredient_id: p.ingredient_id,
-    quantity_on_hand: p.quantity_on_hand,
-    unit: p.unit,
-    canonical_name: p.ingredients?.canonical_name ?? ''
-  }));
+  }>;
 
-  type Item = {
-    id: string;
-    name: string;
-    qtyText: string;      // "194 g" — read display
-    qtyValue: number;     // 194 — pre-fills the edit input
-    qtyUnit: string;      // "g" / "lb" / "ml" / count unit
-    basePerUnit: number;  // editedValue * basePerUnit -> stored base quantity
-    section: string;
-    checked: boolean;
-    suggestions: string[];  // "In pantry: …" hints from related/incomparable pantry items
-  };
+  const units = await loadIngredientUnits(
+    supabase,
+    [...listItems.map(i => i.ingredient_id), ...pantryList.map(p => p.ingredient_id)],
+    user.id
+  );
 
-  const items: Item[] = (((list.shopping_items ?? []) as unknown) as Array<{
-    id: string;
-    ingredient_id: string;
-    quantity_needed: number;
-    unit: string;
-    checked: boolean;
-    store_section: string;
-    ingredients: { canonical_name: string; category: string; density_g_per_ml: number | null } | null;
-  }>).map(si => {
-    const density = si.ingredients?.density_g_per_ml ?? null;
-    const category = si.ingredients?.category ?? 'other';
-    const name = si.ingredients?.canonical_name ?? 'unknown';
-    const normalized: NormalizedQuantity = {
-      type: si.unit === 'ml' ? 'volume' : si.unit === 'g' ? 'weight' : 'count',
-      value: si.quantity_needed,
-      originalUnit: si.unit || null
-    };
-    const disp = shoppingDisplay(normalized, category, name, density);
+  const pantry: PantryRowForMatch[] = pantryList.map(p => {
+    const ing = units.get(p.ingredient_id);
+    const base = ing ? toBase(Number(p.quantity_on_hand), p.unit, ing) : null;
     return {
-      id: si.id,
-      name,
-      qtyText: disp.text,
-      qtyValue: disp.value,
-      qtyUnit: disp.unit,
-      basePerUnit: disp.basePerUnit,
-      section: si.store_section || category,
-      checked: si.checked,
-      suggestions: relatedPantry(
-        { ingredient_id: si.ingredient_id, name, type: normalized.type, density },
-        pantry
-      )
+      ingredient_id: p.ingredient_id,
+      canonical_name: p.ingredients?.canonical_name ?? '',
+      convertible: base != null,
+      isEmpty: Number(p.quantity_on_hand) <= 0,
+      amountText: base != null && ing ? cookingDisplay(base, ing).text : formatAmount(Number(p.quantity_on_hand), p.unit ?? '')
     };
+  });
+
+  type Item = ShoppingItem & { section: string };
+
+  const items: Item[] = listItems.flatMap(si => {
+    const ing = units.get(si.ingredient_id);
+    if (!ing) return [];
+
+    // Older lists stored ml / g / count units; toBase reads those too.
+    const unresolved = [...(si.unresolved ?? [])];
+    let base = toBase(Number(si.quantity_needed), si.unit, ing);
+    if (base == null) {
+      unresolved.push({ quantity: Number(si.quantity_needed), unit: si.unit ?? 'each' });
+      base = 0;
+    }
+
+    const purchase = base > 0 ? purchaseDisplay(base, ing) : null;
+    const parts = [purchase?.text, unresolved.length ? formatUnresolved(unresolved) : null].filter(Boolean);
+
+    return [{
+      id: si.id,
+      name: ing.name,
+      qtyText: parts.join(' + '),
+      buy: buyPrefill(base, ing),
+      section: si.store_section || ing.category,
+      checked: si.checked,
+      suggestions: relatedPantry({ ingredient_id: si.ingredient_id, name: ing.name }, pantry),
+      questions: unresolved.map(part => ({
+        unit: part.unit,
+        partText: formatAmount(part.quantity, part.unit),
+        ...conversionQuestion(part.unit, ing)
+      }))
+    }];
   });
 
   // Group by section
@@ -158,4 +173,28 @@ function formatRange(start: string, end: string): string {
   const s = new Date(start), e = new Date(end);
   const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
   return `${s.toLocaleDateString(undefined, opts)} – ${e.toLocaleDateString(undefined, opts)}`;
+}
+
+/** What the "how much did you buy" prompt starts with. */
+function buyPrefill(base: number, ing: IngredientUnits): BuyPrefill {
+  const packageUnit = ing.purchase?.unit ?? 'package';
+  if (ing.purchase) {
+    const size = sizeForEdit(ing.purchase.size, ing, ing.purchase.label);
+    const packages = base > 0 ? purchaseDisplay(base, ing).value : 1;
+    return { packages, size_quantity: size.quantity, size_unit: size.unit, package_unit: packageUnit, known: true, countOnly: false, common: [] };
+  }
+  if (ing.base_unit === 'count') {
+    return { packages: Math.max(1, Math.ceil(base - 1e-9)), size_quantity: null, size_unit: '', package_unit: ing.count_unit ?? '', known: true, countOnly: true, common: [] };
+  }
+  // Nothing known yet: suggest the rounded amount needed, plus common sizes.
+  const p = base > 0 ? purchaseDisplay(base, ing) : null;
+  return {
+    packages: 1,
+    size_quantity: p ? p.value : null,
+    size_unit: p ? p.unit : 'g',
+    package_unit: packageUnit,
+    known: false,
+    countOnly: false,
+    common: commonSizes(ing)
+  };
 }

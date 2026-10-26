@@ -3,6 +3,7 @@
 import { createServerSupabase } from '@/app/lib/supabase-server';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
+import { resolveIngredients } from '@/app/lib/ingredients';
 import type { Category } from '@/app/lib/types';
 
 export type IngredientInput = {
@@ -27,42 +28,6 @@ export type CreateRecipeInput = {
   ingredients: IngredientInput[];
   steps: string[];
 };
-
-/**
- * Find or create a canonical ingredient. Phase 1: simple case-insensitive match.
- * Phase 2 will route this through Haiku 4.5 for proper normalization across aliases.
- */
-async function findOrCreateIngredient(
-  supabase: ReturnType<typeof createServerSupabase>,
-  rawName: string
-): Promise<string> {
-  const normalized = rawName.trim().toLowerCase();
-
-  // Try alias match first
-  const { data: alias } = await supabase
-    .from('ingredient_aliases')
-    .select('ingredient_id')
-    .ilike('alias', normalized)
-    .maybeSingle();
-  if (alias?.ingredient_id) return alias.ingredient_id;
-
-  // Try canonical_name match
-  const { data: existing } = await supabase
-    .from('ingredients')
-    .select('id')
-    .ilike('canonical_name', normalized)
-    .maybeSingle();
-  if (existing?.id) return existing.id;
-
-  // Create new
-  const { data: created, error } = await supabase
-    .from('ingredients')
-    .insert({ canonical_name: normalized, category: 'other' })
-    .select('id')
-    .single();
-  if (error || !created) throw new Error(`Failed to create ingredient: ${error?.message}`);
-  return created.id;
-}
 
 export async function createRecipe(input: CreateRecipeInput): Promise<{ id: string }> {
   const supabase = createServerSupabase();
@@ -92,22 +57,21 @@ export async function createRecipe(input: CreateRecipeInput): Promise<{ id: stri
     .single();
   if (recipeError || !recipe) throw new Error(`Failed to create recipe: ${recipeError?.message}`);
 
-  // Insert ingredients (find or create canonical entries)
-  if (input.ingredients.length > 0) {
-    const ingredientRows = await Promise.all(
-      input.ingredients.map(async (ing, idx) => {
-        const ingredientId = await findOrCreateIngredient(supabase, ing.name);
-        return {
-          recipe_id: recipe.id,
-          ingredient_id: ingredientId,
-          quantity: ing.quantity,
-          unit: ing.unit,
-          prep_note: ing.prep_note,
-          order_index: idx,
-          raw_text: `${ing.quantity ?? ''} ${ing.unit ?? ''} ${ing.name}`.trim()
-        };
-      })
-    );
+  // Insert ingredients, matched to canonical entries. display_name keeps the
+  // name as written so the recipe reads exactly as entered.
+  const named = input.ingredients.filter(ing => ing.name.trim());
+  if (named.length > 0) {
+    const ids = await resolveIngredients(supabase, named.map(ing => ing.name));
+    const ingredientRows = named.map((ing, idx) => ({
+      recipe_id: recipe.id,
+      ingredient_id: ids.get(ing.name.trim().toLowerCase().replace(/\s+/g, ' '))!,
+      display_name: ing.name.trim(),
+      quantity: ing.quantity,
+      unit: ing.unit,
+      prep_note: ing.prep_note,
+      order_index: idx,
+      raw_text: `${ing.quantity ?? ''} ${ing.unit ?? ''} ${ing.name}`.trim()
+    }));
     const { error: ingError } = await supabase.from('recipe_ingredients').insert(ingredientRows);
     if (ingError) throw new Error(`Failed to add ingredients: ${ingError.message}`);
   }

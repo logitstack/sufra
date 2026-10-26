@@ -1,31 +1,27 @@
 /**
  * Fuzzy pantry matching for shopping-list suggestions.
  *
- * The shopping list subtracts pantry only on an exact ingredient match with
- * compatible units (see generateShoppingList). When that precise path can't
- * apply — a different-but-related ingredient (recipe wants "chicken thighs",
+ * The shopping list subtracts pantry in base units on an exact ingredient
+ * match (see generateShoppingList). When that precise path can't apply — a different-but-related ingredient (recipe wants "chicken thighs",
  * pantry has "chicken breast") or the same ingredient in an incomparable unit
  * (recipe wants "garlic cloves", pantry has a jar of "minced garlic") — we
  * don't guess at the math. Instead we surface a hint beneath the item so the
  * shopper can decide whether what they have will do.
  */
 
-import { normalizeWithDensity, type UnitType } from './units';
-
 export type PantryRowForMatch = {
   ingredient_id: string;
-  quantity_on_hand: number;
-  unit: string | null;
+  /** Ready-to-show amount, e.g. "2 tbsp" or "1 jar". */
+  amountText: string;
   canonical_name: string;
+  /** False when the row's unit can't be converted to base units. */
+  convertible: boolean;
+  isEmpty: boolean;
 };
 
 export type ShoppingItemForMatch = {
   ingredient_id: string;
   name: string;
-  /** Measurement type of the listed quantity (after density collapse). */
-  type: UnitType;
-  /** Ingredient density, so a same-ingredient pantry row collapses the same way. */
-  density: number | null;
 };
 
 // Descriptors and form words that say nothing about *which* ingredient it is.
@@ -57,11 +53,7 @@ function intersects(a: Set<string>, b: Set<string>): boolean {
 }
 
 function label(row: PantryRowForMatch): string {
-  const qty = Number.isInteger(row.quantity_on_hand)
-    ? String(row.quantity_on_hand)
-    : String(Math.round(row.quantity_on_hand * 100) / 100);
-  const unit = row.unit ? ` ${row.unit}` : '';
-  return `In pantry: ${qty}${unit} ${row.canonical_name}`;
+  return `In pantry: ${row.amountText} ${row.canonical_name}`;
 }
 
 /**
@@ -69,10 +61,9 @@ function label(row: PantryRowForMatch): string {
  * subtraction. A row qualifies when it is:
  *   - a different-but-related ingredient (shared keyword, e.g. chicken
  *     thighs <-> chicken breast), or
- *   - the same ingredient in an INCOMPARABLE unit — its measurement type
- *     differs from the item's, so subtraction couldn't touch it. (Same-type
- *     rows were already subtracted in generateShoppingList, so suggesting them
- *     would double-count what's still on the list.)
+ *   - the same ingredient in a unit with no known conversion, so subtraction
+ *     couldn't touch it. (Convertible rows were already subtracted in
+ *     generateShoppingList, so suggesting them would double-count.)
  * Rows with nothing on hand are skipped. Returns ready-to-render labels.
  */
 export function relatedPantry(
@@ -82,10 +73,9 @@ export function relatedPantry(
   const itemKeywords = keywords(item.name);
   const out: string[] = [];
   for (const row of pantry) {
-    if (row.quantity_on_hand <= 0) continue;
+    if (row.isEmpty) continue;
     if (row.ingredient_id === item.ingredient_id) {
-      const haveType = normalizeWithDensity(row.quantity_on_hand, row.unit, item.density).type;
-      if (haveType !== item.type) out.push(label(row));  // incomparable -> suggest
+      if (!row.convertible) out.push(label(row));
       continue;
     }
     if (intersects(itemKeywords, keywords(row.canonical_name))) out.push(label(row));

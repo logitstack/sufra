@@ -1,62 +1,60 @@
 /**
- * Anthropic API wrapper used by the ingester.
- * Runs only on the server. ANTHROPIC_API_KEY must be set.
+ * Anthropic API wrapper. Runs only on the server. ANTHROPIC_API_KEY must be set.
+ *
+ * Every call returns schema-validated JSON (structured outputs) and opts into
+ * server-side refusal fallback.
  */
 
-const API_URL = 'https://api.anthropic.com/v1/messages';
-const MODEL_SONNET = 'claude-sonnet-4-5';   // Extraction (text + vision)
-const MODEL_HAIKU  = 'claude-haiku-4-5';    // Normalization (cheap, fast)
+import Anthropic from '@anthropic-ai/sdk';
+import { betaZodOutputFormat } from '@anthropic-ai/sdk/helpers/beta/zod';
+import type { z } from 'zod';
 
-type MessageContent =
-  | { type: 'text'; text: string }
-  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+export const MODEL = 'claude-sonnet-5-5';
 
-type AnthropicMessage = {
-  role: 'user' | 'assistant';
-  content: string | MessageContent[];
-};
-
-export async function callClaude({
-  model = MODEL_SONNET,
-  system,
-  messages,
-  maxTokens = 4096
-}: {
-  model?: string;
-  system?: string;
-  messages: AnthropicMessage[];
-  maxTokens?: number;
-}): Promise<string> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
-
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json'
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: maxTokens,
-      system,
-      messages
-    })
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Anthropic API error (${res.status}): ${errText}`);
-  }
-
-  const data = await res.json();
-  // Concatenate all text content blocks
-  const text = (data.content ?? [])
-    .filter((b: { type: string }) => b.type === 'text')
-    .map((b: { text: string }) => b.text)
-    .join('\n');
-  return text;
+let client: Anthropic | null = null;
+function getClient(): Anthropic {
+  if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not set');
+  client ??= new Anthropic();
+  return client;
 }
 
-export { MODEL_SONNET, MODEL_HAIKU };
+export type UserContent = Anthropic.Beta.BetaContentBlockParam[] | string;
+
+/**
+ * Ask Claude for JSON matching `schema`.
+ * `effort` trades depth for speed; extraction work is fine at 'medium'.
+ */
+export async function claudeJson<T extends z.ZodType>({
+  system,
+  content,
+  schema,
+  effort = 'medium',
+  maxTokens = 16000
+}: {
+  system: string;
+  content: UserContent;
+  schema: T;
+  effort?: 'low' | 'medium' | 'high';
+  maxTokens?: number;
+}): Promise<z.infer<T>> {
+  const response = await getClient().beta.messages.parse({
+    model: MODEL,
+    max_tokens: maxTokens,
+    betas: ['server-side-fallback-2026-07-01'],
+    fallbacks: 'default',
+    system,
+    messages: [{ role: 'user', content }],
+    output_config: { effort, format: betaZodOutputFormat(schema) }
+  });
+
+  if (response.stop_reason === 'refusal') {
+    throw new Error('Claude declined this request. Try different input.');
+  }
+  if (response.stop_reason === 'max_tokens') {
+    throw new Error('The response was cut off. Try a shorter input.');
+  }
+  if (response.parsed_output == null) {
+    throw new Error('Could not read the response from Claude.');
+  }
+  return response.parsed_output as z.infer<T>;
+}

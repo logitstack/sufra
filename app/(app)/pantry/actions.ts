@@ -2,11 +2,25 @@
 
 import { createServerSupabase } from '@/app/lib/supabase-server';
 import { revalidatePath } from 'next/cache';
-import { normalizeWithDensity, scale, subtract } from '@/app/lib/units';
+import { loadIngredientUnits, resolveIngredient } from '@/app/lib/ingredients';
+import { adjustPantry, pantryUnit } from '@/app/lib/pantry';
+import { toBase } from '@/app/lib/units';
+
+/**
+ * Turn an entered amount into what the pantry row stores: base units when the
+ * unit converts, otherwise the amount as entered (it still shows, and starts
+ * counting in the math once a conversion is known).
+ */
+function stored(quantity: number, unit: string | null, ing: Parameters<typeof toBase>[2]) {
+  const base = toBase(quantity, unit, ing);
+  return base != null
+    ? { quantity_on_hand: base, unit: pantryUnit(ing) }
+    : { quantity_on_hand: quantity, unit };
+}
 
 /**
  * Add or update a pantry item by ingredient name.
- * Looks up canonical ingredient (find or create), then upserts the pantry row.
+ * Resolves the canonical ingredient (aliases, then Claude), then upserts the pantry row.
  */
 export async function addPantryItem(input: {
   ingredient_name: string;
@@ -21,37 +35,18 @@ export async function addPantryItem(input: {
   if (!input.ingredient_name.trim()) throw new Error('Ingredient name is required');
   if (input.quantity <= 0) throw new Error('Quantity must be positive');
 
-  // Find or create canonical ingredient
-  const normalized = input.ingredient_name.trim().toLowerCase();
-  let ingredientId: string;
+  const ingredientId = await resolveIngredient(supabase, input.ingredient_name);
+  const ing = (await loadIngredientUnits(supabase, [ingredientId], user.id)).get(ingredientId);
+  if (!ing) throw new Error('Could not load ingredient');
 
-  const { data: existing } = await supabase
-    .from('ingredients')
-    .select('id')
-    .ilike('canonical_name', normalized)
-    .maybeSingle();
-
-  if (existing?.id) {
-    ingredientId = existing.id;
-  } else {
-    const { data: created, error } = await supabase
-      .from('ingredients')
-      .insert({ canonical_name: normalized, category: 'other' })
-      .select('id')
-      .single();
-    if (error || !created) throw new Error(`Could not add ingredient: ${error?.message}`);
-    ingredientId = created.id;
-  }
-
-  // Upsert pantry row
   const { error: upsertError } = await supabase
     .from('pantry')
     .upsert({
       user_id: user.id,
       ingredient_id: ingredientId,
-      quantity_on_hand: input.quantity,
-      unit: input.unit,
+      ...stored(input.quantity, input.unit, ing),
       expiration_date: input.expiration_date,
+      purchased_at: new Date().toISOString().slice(0, 10),
       last_updated: new Date().toISOString()
     }, { onConflict: 'user_id,ingredient_id' });
 
@@ -59,12 +54,21 @@ export async function addPantryItem(input: {
   revalidatePath('/pantry');
 }
 
-export async function updatePantryItem(pantryId: string, quantity: number, expiration: string | null) {
+/** Set a pantry row's amount. `unit` is the unit the amount was entered in. */
+export async function updatePantryItem(pantryId: string, quantity: number, unit: string | null, expiration: string | null) {
   const supabase = createServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+
+  const { data: row } = await supabase.from('pantry').select('ingredient_id').eq('id', pantryId).single();
+  if (!row) throw new Error('Pantry item not found');
+  const ing = (await loadIngredientUnits(supabase, [row.ingredient_id], user.id)).get(row.ingredient_id);
+  if (!ing) throw new Error('Could not load ingredient');
+
   const { error } = await supabase
     .from('pantry')
     .update({
-      quantity_on_hand: Math.max(0, quantity),
+      ...stored(Math.max(0, quantity), unit, ing),
       expiration_date: expiration,
       last_updated: new Date().toISOString()
     })
@@ -81,8 +85,9 @@ export async function deletePantryItem(pantryId: string) {
 }
 
 /**
- * Mark a recipe as cooked. Deducts each ingredient from pantry,
- * scaled by (servings_made / recipe.servings_yield).
+ * Mark a recipe as cooked. Deducts each ingredient from the pantry in base
+ * units, scaled by (servings_made / recipe.servings_yield). Amounts with no
+ * known conversion are skipped rather than guessed.
  */
 export async function cookRecipe(recipeId: string, servingsMade: number) {
   const supabase = createServerSupabase();
@@ -91,54 +96,30 @@ export async function cookRecipe(recipeId: string, servingsMade: number) {
 
   const { data: recipe } = await supabase
     .from('recipes')
-    .select('servings_yield, recipe_ingredients(quantity, unit, ingredient_id, ingredients(density_g_per_ml))')
+    .select('servings_yield, recipe_ingredients(quantity, unit, ingredient_id)')
     .eq('id', recipeId)
     .single();
-
   if (!recipe) throw new Error('Recipe not found');
 
-  const scaleFactor = servingsMade / Math.max(1, recipe.servings_yield);
-
-  for (const ri of ((recipe.recipe_ingredients ?? []) as unknown) as Array<{
+  const ris = ((recipe.recipe_ingredients ?? []) as unknown) as Array<{
     quantity: number | null;
     unit: string | null;
     ingredient_id: string;
-    ingredients: { density_g_per_ml: number | null } | null;
-  }>) {
+  }>;
+  const units = await loadIngredientUnits(supabase, ris.map(r => r.ingredient_id), user.id);
+  const scaleFactor = servingsMade / Math.max(1, recipe.servings_yield);
+
+  // Sum per ingredient first so a recipe listing salt twice deducts once.
+  const used = new Map<string, number>();
+  for (const ri of ris) {
     if (ri.quantity === null) continue;
+    const ing = units.get(ri.ingredient_id);
+    const base = ing ? toBase(Number(ri.quantity) * scaleFactor, ri.unit, ing) : null;
+    if (base != null) used.set(ri.ingredient_id, (used.get(ri.ingredient_id) ?? 0) + base);
+  }
 
-    const { data: pantryRow } = await supabase
-      .from('pantry')
-      .select('id, quantity_on_hand, unit')
-      .eq('user_id', user.id)
-      .eq('ingredient_id', ri.ingredient_id)
-      .maybeSingle();
-
-    if (!pantryRow) continue;  // Skip if not in pantry
-
-    // Normalize both (density lets tsp-in-recipe meet grams-in-pantry) and subtract
-    const density = ri.ingredients?.density_g_per_ml ?? null;
-    const used = scale(normalizeWithDensity(ri.quantity, ri.unit, density), scaleFactor);
-    const have = normalizeWithDensity(pantryRow.quantity_on_hand, pantryRow.unit, density);
-
-    // Density already collapses volume<->weight above, so a tsp recipe meets a
-    // grams pantry. What remains incompatible (e.g. a count vs a measured unit)
-    // can't be subtracted safely, so skip it rather than guess.
-    if (used.type !== have.type) continue;
-
-    // Convert back to pantry's unit and update
-    const remaining = subtract(have, used);
-    const remainingInOriginal = remaining.value === 0
-      ? 0
-      : (pantryRow.quantity_on_hand * remaining.value) / Math.max(have.value, 0.0001);
-
-    await supabase
-      .from('pantry')
-      .update({
-        quantity_on_hand: remainingInOriginal,
-        last_updated: new Date().toISOString()
-      })
-      .eq('id', pantryRow.id);
+  for (const [ingredientId, base] of Array.from(used.entries())) {
+    await adjustPantry(supabase, user.id, units.get(ingredientId)!, -base);
   }
 
   revalidatePath('/pantry');

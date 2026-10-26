@@ -2,20 +2,45 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { toggleShoppingItem, completeShoppingList, deleteShoppingList } from '../actions';
+import { toggleShoppingItem, completeShoppingList, deleteShoppingList, resolveShoppingUnit, type Bought } from '../actions';
 
-type Item = {
+/** A size Sufra doesn't know yet, e.g. how much is in "1 can". */
+export type SizeQuestion = {
+  unit: string;
+  partText: string;
+  answer: 'weight' | 'count';
+  text: string;
+};
+
+/** Starting values for "how much did you buy". */
+export type BuyPrefill = {
+  packages: number;
+  size_quantity: number | null;
+  size_unit: string;
+  package_unit: string;   // 'bag', 'can'; '' or 'clove' for counts
+  known: boolean;         // a usual size exists
+  countOnly: boolean;     // counted items with no package (onions)
+  common: Array<{ quantity: number; unit: string }>;
+};
+
+export type ShoppingItem = {
   id: string;
   name: string;
-  qtyText: string;
-  qtyValue: number;
-  qtyUnit: string;
-  basePerUnit: number;
-  section: string;
+  qtyText: string;      // "2 cans", "1 bag (1 kg)", "2 tsp + 1 can"
+  buy: BuyPrefill;
   checked: boolean;
-  suggestions: string[];
+  suggestions: string[];  // "In pantry: …" hints from related/unconvertible pantry items
+  questions: SizeQuestion[];
 };
+type Item = ShoppingItem;
 type Section = { key: string; label: string; items: Item[] };
+
+const WEIGHT_UNITS = ['g', 'oz', 'lb', 'kg'];
+const SIZE_UNITS = ['', 'g', 'kg', 'oz', 'lb', 'ml', 'l', 'fl_oz'];
+
+function unitLabel(u: string): string {
+  return u === '' ? 'count' : u.replace('_', ' ');
+}
 
 export default function ShoppingClient({
   listId, sections, isComplete
@@ -26,18 +51,18 @@ export default function ShoppingClient({
 }) {
   const router = useRouter();
   const [optimistic, setOptimistic] = useState<Map<string, boolean>>(new Map());
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState('');
+  const [buyingId, setBuyingId] = useState<string | null>(null);
 
   function isChecked(item: Item): boolean {
     const o = optimistic.get(item.id);
     return o !== undefined ? o : item.checked;
   }
 
-  async function toggle(item: Item, next: boolean, overrideBaseQty?: number) {
+  async function toggle(item: Item, next: boolean, bought?: Bought) {
     setOptimistic(new Map(optimistic.set(item.id, next)));
+    setBuyingId(null);
     try {
-      await toggleShoppingItem(item.id, next, overrideBaseQty);
+      await toggleShoppingItem(item.id, next, bought);
       router.refresh();
     } catch (err) {
       const reverted = new Map(optimistic);
@@ -45,24 +70,6 @@ export default function ShoppingClient({
       setOptimistic(reverted);
       alert(err instanceof Error ? err.message : 'Update failed');
     }
-  }
-
-  function startEdit(item: Item) {
-    setEditingId(item.id);
-    setEditValue(String(item.qtyValue));
-  }
-
-  function cancelEdit() {
-    setEditingId(null);
-    setEditValue('');
-  }
-
-  async function confirmEdit(item: Item) {
-    const entered = parseFloat(editValue);
-    if (isNaN(entered) || entered < 0) return;
-    const overrideBaseQty = entered * item.basePerUnit;
-    cancelEdit();
-    await toggle(item, true, overrideBaseQty);
   }
 
   async function handleComplete() {
@@ -99,40 +106,14 @@ export default function ShoppingClient({
             <ul className="space-y-1">
               {section.items.map(item => {
                 const checked = isChecked(item);
-                const editing = editingId === item.id;
-
-                if (editing) {
+                if (buyingId === item.id) {
                   return (
                     <li key={item.id}>
-                      <div className="flex items-center gap-2 py-2 px-3 bg-white border border-maroon-300 rounded-sm">
-                        <span className="text-sm text-ink/85 truncate flex-1">{item.name}</span>
-                        <input
-                          type="number"
-                          step="any"
-                          min="0"
-                          autoFocus
-                          value={editValue}
-                          onChange={e => setEditValue(e.target.value)}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter') confirmEdit(item);
-                            if (e.key === 'Escape') cancelEdit();
-                          }}
-                          className="w-20 px-2 py-1.5 bg-beige-50 border border-beige-200 rounded-sm text-sm tnum text-center focus:outline-none focus:border-maroon-700"
-                        />
-                        <span className="text-xs text-beige-700 w-8">{item.qtyUnit}</span>
-                        <button
-                          onClick={() => confirmEdit(item)}
-                          className="px-3 py-1.5 bg-maroon-900 text-beige-50 rounded-sm text-xs font-medium hover:bg-maroon-700 transition"
-                        >
-                          Add
-                        </button>
-                        <button
-                          onClick={cancelEdit}
-                          className="px-2 py-1.5 text-xs text-beige-700 hover:text-maroon-900 transition"
-                        >
-                          Cancel
-                        </button>
-                      </div>
+                      <BuyPanel
+                        item={item}
+                        onConfirm={bought => toggle(item, true, bought)}
+                        onCancel={() => setBuyingId(null)}
+                      />
                     </li>
                   );
                 }
@@ -144,7 +125,7 @@ export default function ShoppingClient({
                     >
                      <div className="flex items-center justify-between gap-3">
                       <button
-                        onClick={() => toggle(item, !checked)}
+                        onClick={() => (checked ? toggle(item, false) : setBuyingId(item.id))}
                         className="flex items-center gap-3 min-w-0 flex-1 text-left"
                       >
                         <span className={`w-5 h-5 rounded-sm border-2 flex items-center justify-center flex-shrink-0 transition ${checked ? 'bg-maroon-900 border-maroon-900' : 'border-beige-300'}`}>
@@ -158,20 +139,11 @@ export default function ShoppingClient({
                       </button>
                       <div className="flex items-center gap-2 flex-shrink-0">
                         <span className="text-sm text-maroon-900 font-medium tnum">{item.qtyText}</span>
-                        {!checked && (
-                          <button
-                            onClick={() => startEdit(item)}
-                            aria-label={`Edit quantity for ${item.name}`}
-                            className="text-beige-700 hover:text-maroon-900 transition p-1"
-                          >
-                            <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2">
-                              <path d="M12 20h9" />
-                              <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
-                            </svg>
-                          </button>
-                        )}
                       </div>
                      </div>
+                      {!checked && item.questions.map(q => (
+                        <SizePrompt key={q.unit} itemId={item.id} question={q} onSaved={() => router.refresh()} />
+                      ))}
                       {!checked && item.suggestions.length > 0 && (
                         <ul className="mt-1.5 pl-8 space-y-0.5">
                           {item.suggestions.map((s, i) => (
@@ -208,5 +180,146 @@ export default function ShoppingClient({
         </div>
       </div>
     </>
+  );
+}
+
+function SizePrompt({ itemId, question, onSaved }: { itemId: string; question: SizeQuestion; onSaved: () => void }) {
+  const [value, setValue] = useState('');
+  const [unit, setUnit] = useState(question.answer === 'weight' ? 'g' : '');
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    const qty = parseFloat(value);
+    if (isNaN(qty) || qty <= 0) return;
+    setSaving(true);
+    try {
+      await resolveShoppingUnit(itemId, question.unit, qty, unit);
+      onSaved();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not save size');
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 ml-8 p-2.5 bg-maroon-50 border border-maroon-100 rounded-sm">
+      <p className="text-xs text-maroon-900 mb-2">
+        Sufra needs a size to add <span className="font-medium">{question.partText}</span> to this line. {question.text}
+      </p>
+      <div className="flex items-center gap-2">
+        <input
+          type="number"
+          step="any"
+          min="0"
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') save(); }}
+          className="w-20 px-2 py-1.5 bg-white border border-beige-200 rounded-sm text-sm tnum text-center focus:outline-none focus:border-maroon-700"
+        />
+        {question.answer === 'weight' && (
+          <select
+            value={unit}
+            onChange={e => setUnit(e.target.value)}
+            className="px-2 py-1.5 bg-white border border-beige-200 rounded-sm text-sm focus:outline-none focus:border-maroon-700"
+          >
+            {WEIGHT_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+          </select>
+        )}
+        <button
+          onClick={save}
+          disabled={saving || !value}
+          className="px-3 py-1.5 bg-maroon-900 text-beige-50 rounded-sm text-xs font-medium hover:bg-maroon-700 transition disabled:opacity-50"
+        >
+          {saving ? 'Saving…' : 'Save size'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function BuyPanel({ item, onConfirm, onCancel }: {
+  item: Item;
+  onConfirm: (bought: Bought) => void;
+  onCancel: () => void;
+}) {
+  const b = item.buy;
+  const [packages, setPackages] = useState(String(b.packages));
+  const [size, setSize] = useState(b.size_quantity != null ? String(b.size_quantity) : '');
+  const [unit, setUnit] = useState(b.size_unit);
+
+  function confirm() {
+    const n = parseFloat(packages);
+    if (isNaN(n) || n < 0) return;
+    const sz = parseFloat(size);
+    onConfirm({ packages: n, size_quantity: b.countOnly || isNaN(sz) ? null : sz, size_unit: unit });
+  }
+
+  const packageWord = b.countOnly ? (b.package_unit || item.name) : (b.package_unit || 'package');
+
+  return (
+    <div className="py-3 px-3 bg-white border border-maroon-300 rounded-sm">
+      <p className="text-sm text-ink/85 mb-2">How much <span className="font-medium">{item.name}</span> did you buy?</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          type="number" step="any" min="0" autoFocus
+          value={packages}
+          onChange={e => setPackages(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') confirm(); if (e.key === 'Escape') onCancel(); }}
+          aria-label="How many"
+          className="w-16 px-2 py-1.5 bg-beige-50 border border-beige-200 rounded-sm text-sm tnum text-center focus:outline-none focus:border-maroon-700"
+        />
+        <span className="text-xs text-beige-700">{packageWord}{parseFloat(packages) === 1 ? '' : 's'}</span>
+        {!b.countOnly && (
+          <>
+            <span className="text-xs text-beige-700">of</span>
+            <input
+              type="number" step="any" min="0"
+              value={size}
+              onChange={e => setSize(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') confirm(); }}
+              aria-label="Size of each"
+              className="w-20 px-2 py-1.5 bg-beige-50 border border-beige-200 rounded-sm text-sm tnum text-center focus:outline-none focus:border-maroon-700"
+            />
+            <select
+              value={unit}
+              onChange={e => setUnit(e.target.value)}
+              aria-label="Size unit"
+              className="px-2 py-1.5 bg-beige-50 border border-beige-200 rounded-sm text-sm focus:outline-none focus:border-maroon-700"
+            >
+              {SIZE_UNITS.map(u => <option key={u} value={u}>{unitLabel(u)}</option>)}
+            </select>
+          </>
+        )}
+      </div>
+      {!b.known && b.common.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          <span className="text-[11px] text-beige-700 self-center">Common sizes:</span>
+          {b.common.map(c => (
+            <button
+              key={`${c.quantity}${c.unit}`}
+              onClick={() => { setSize(String(c.quantity)); setUnit(c.unit); }}
+              className="px-2 py-1 text-[11px] border border-beige-200 rounded-sm text-maroon-900 hover:border-maroon-700 transition"
+            >
+              {c.quantity} {unitLabel(c.unit)}
+            </button>
+          ))}
+        </div>
+      )}
+      {!b.countOnly && (
+        <p className="text-[11px] text-beige-700 mt-2">A new size becomes your usual size for {item.name}.</p>
+      )}
+      <div className="flex flex-wrap gap-2 mt-3">
+        <button onClick={confirm} className="px-3 py-1.5 bg-maroon-900 text-beige-50 rounded-sm text-xs font-medium hover:bg-maroon-700 transition">
+          Add to pantry
+        </button>
+        <button
+          onClick={() => onConfirm({ packages: 0, size_quantity: null, size_unit: '' })}
+          className="px-3 py-1.5 text-xs text-maroon-900 border border-beige-200 rounded-sm hover:border-maroon-700 transition"
+        >
+          Check off only
+        </button>
+        <button onClick={onCancel} className="px-2 py-1.5 text-xs text-beige-700 hover:text-maroon-900 transition">Cancel</button>
+      </div>
+    </div>
   );
 }

@@ -6,7 +6,7 @@ Your recipe library, meal planner, and kitchen companion. Multi-device, sharing-
 
 Every feature you asked for, wired and working once Supabase + Anthropic are set up:
 
-- **Recipe ingestion** from links (NYT Cooking, Serious Eats, blogs), pasted text (Instagram captions, emailed recipes, anything), and photos (cookbook pages, handwritten cards, screenshots). The ingester uses schema.org JSON-LD first for clean structured sources, then falls back to Claude Sonnet 4.5 for vision and messy text.
+- **Recipe ingestion** from links (NYT Cooking, Serious Eats, blogs), pasted text (Instagram captions, emailed recipes, anything), and photos (cookbook pages, handwritten cards, screenshots). The ingester uses schema.org JSON-LD first for clean structured sources, then falls back to Claude Sonnet 5.5 for vision and messy text.
 - **Library** sorted by cuisine OR by category (meat / vegetarian / baked goods / desserts / drinks) with search and filters. Every recipe is the same uniform layout: photo, byline, source link, ingredients list, numbered method, notes, tags.
 - **Multi-device**: data lives in Postgres via Supabase, sync is automatic. Same view on phone, laptop, tablet.
 - **Read-only sharing** by email. Recipients see a "Shared with you" badge and can fork into their own library with one tap.
@@ -18,7 +18,7 @@ Every feature you asked for, wired and working once Supabase + Anthropic are set
 
 - **Frontend**: Next.js 14 (App Router) + Tailwind CSS + TypeScript
 - **Backend**: Supabase (Postgres + Auth + Storage)
-- **AI**: Anthropic Claude Sonnet 4.5 (recipe extraction from URL/text/photo)
+- **AI**: Anthropic Claude Sonnet 5.5 via the official SDK (recipe extraction, ingredient matching)
 - **Hosting**: Vercel
 - **Fonts**: Fraunces (display) + Inter (body)
 - **Palette**: Maroon (#5C1A1B) + Beige (#FAF6F0) + White
@@ -47,6 +47,15 @@ In your new project, click **SQL Editor** in the left sidebar, then **New query*
 Open `supabase/schema.sql` in your code editor, copy the entire file, paste it into the SQL Editor, click **Run**. This creates 11 tables with row-level security policies.
 
 Then open `supabase/seed.sql`, do the same: copy, paste, run. This adds the email-lookup function used for sharing, plus 42 canonical ingredients with 60+ aliases (so "evoo" maps to "olive oil", "haldi" to "turmeric", etc).
+
+Then apply everything in `supabase/migrations/`, oldest first (see below).
+
+### Database migrations
+
+Schema changes after the initial setup live in `supabase/migrations/`, named `<timestamp>_<what>.sql`. Every file is safe to re-run. Two ways to apply them:
+
+- **Paste**: open each new file, copy it into the SQL Editor, run it. Go in filename order.
+- **CLI** (one-time setup, then one command): run `npx supabase login`, then `npm run db:link -- --project-ref <ref>` where `<ref>` is the part of your Supabase URL before `.supabase.co`. It asks for your database password. After that, `npm run db:push` applies any migration that hasn't run yet and remembers what has.
 
 ### 4. Create the storage bucket
 
@@ -128,8 +137,10 @@ Follow the prompts. After deploy:
 
 1. Go to your project in the Vercel dashboard
 2. **Settings → Environment Variables**
-3. Add the same three values from `.env.local`: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `ANTHROPIC_API_KEY`
+3. Add the values from `.env.local`: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `ANTHROPIC_API_KEY`, and `CRON_SECRET` (any long random string, e.g. from `openssl rand -hex 32`)
 4. Redeploy: `npx vercel --prod`
+
+`vercel.json` schedules a cron that calls `/api/keep-alive` every three days. It runs one small query so the Supabase free tier doesn't pause the project after a quiet week. Vercel sends `CRON_SECRET` with each call, and the route rejects requests without it. Check it under **Settings → Cron Jobs** in Vercel.
 
 Then back in Supabase:
 
@@ -152,7 +163,7 @@ Sufra now lives on your home screen like a native app.
 
 When you click "Add recipe", three import options sit at the top of the page:
 
-- **From a link**: paste a URL. Sufra fetches the page. If it has schema.org Recipe JSON-LD embedded (most modern recipe sites do), Sufra parses that directly — no AI cost. Otherwise it sends the page text to Claude Sonnet 4.5 with strict extraction instructions, getting structured JSON back.
+- **From a link**: paste a URL. Sufra fetches the page. If it has schema.org Recipe JSON-LD embedded (most modern recipe sites do), Sufra parses that directly — no AI cost. Otherwise it sends the page text to Claude Sonnet 5.5, which returns schema-checked JSON.
 - **Paste text**: drop any block of text. Instagram caption, email forward, blog excerpt. Goes to Claude with the same extraction prompt.
 - **From a photo**: take or upload a photo of a cookbook page, handwritten card, screenshot. Claude's vision reads it.
 
@@ -164,20 +175,49 @@ Three view modes at the top: **Cuisine**, **Category**, or **All**. Cuisine grou
 
 ### Meal planning + grocery list math
 
+Units work in layers:
+
+- **Recipes** always show amounts exactly as entered. Nothing rewrites a recipe's units.
+- **Math** converts every amount into one base unit per ingredient: grams, or a count for things like eggs, onions and garlic cloves. Volume converts through each ingredient's density, containers ("1 can") through standard sizes in `ingredient_conversions`. You never see base units.
+- **The pantry** shows cooking units: tsp, tbsp, cups, grams, counts.
+- **The grocery list** shows whole packages, rounded up: "2 cans", "1 bag (1 kg)". Items the pantry already covers don't appear.
+
 When you generate a shopping list from a plan:
 
-1. For each plan item, Sufra scales the recipe's ingredients by `(times_per_period × servings_per_time) / recipe.servings_yield`
-2. All scaled ingredients across all recipes get aggregated by canonical ingredient (so "1 cup flour" from one recipe plus "200g flour" from another get combined)
-3. Quantities get normalized to base units (volumes → ml, weights → g) before summing
-4. Your pantry quantities get subtracted from what's needed
-5. The remainder becomes the shopping list, grouped by store section (produce, protein, dairy, etc)
-6. Items where the pantry already covers the full need are omitted
+1. Each recipe's ingredients are scaled by `(times_per_period × servings_per_time) / recipe.servings_yield`
+2. Every amount is converted to base units and summed per ingredient, so one ingredient is always one line
+3. Pantry amounts (also in base units) are subtracted
+4. The rest is shown in purchase units, grouped by store section
+5. If a size is unknown (say, "1 jar" of something new), the line reads "2 tbsp + 1 jar" and asks you once how much is in a jar. Your answer is saved for next time.
+
+Ingredient names from recipes and the pantry are matched to canonical ingredients through aliases first, then Claude for anything new. Claude also fills in a new ingredient's density, base unit and usual package size. Recipes keep the name as written.
 
 ### Pantry auto-updates
 
-- **When you check off a shopping list item**: that quantity gets added to your pantry (creates a new entry or sums into existing)
-- **When you click "I cooked this" on a recipe**: ingredients are scaled to servings made and deducted from your pantry (floored at zero — never goes negative)
-- **Manual edits anytime**: tap any pantry item to edit its quantity, set/clear an expiration date, or delete it
+- **When you check off a shopping list item**: Sufra asks how much you bought (prefilled with your usual size) and adds that to your pantry. **Check off only** skips the pantry.
+- **When you click "I cooked this" on a recipe**: ingredients are scaled to servings made and deducted from your pantry (floored at zero, never negative)
+- **Manual edits anytime**: tap any pantry item to edit its quantity, set or clear an expiration date, or delete it
+
+### Receipts and quick entry
+
+From the pantry, **Scan receipt** reads a receipt photo, an image or PDF, or receipt text pasted from an email. **Type what you bought** takes a plain list like "2 lb chicken, bag of rice, 3 onions, olive oil".
+
+1. Claude reads each line: the product, how many, and the package size or printed weight. "2 @ 3.99" counts as two packages.
+2. Each line is matched to an ingredient. Products you've confirmed before ("MORTON SALT 26OZ") are remembered with their size in `product_aliases`, so they go straight through.
+3. The review screen shows only new or uncertain lines for you to check. Everything else is listed as matched.
+4. On confirm, the pantry goes up by what you bought, each item records its purchase date, matching items on open grocery lists are checked off, and the package size becomes your usual size for that ingredient.
+
+On a grocery list, tapping an item asks how much you bought, prefilled with your usual size. A different size becomes the new usual size. If there's no usual size yet, it offers a few common ones.
+
+### What can I make
+
+The **Cook** page compares every recipe you can see against your pantry, in base units:
+
+- **Can make now**: every ingredient is covered.
+- **Near misses**: one or two ingredients short, with a button that adds them to your open grocery list (or a new one).
+- Within each group, recipes using the items you've had longest come first.
+- **Ideas from Claude**: dishes outside your library built from what's on hand. Save one to open it in the normal add-recipe form.
+- **Always on hand**: staples (salt, water, cooking oil by default) never block a match. Edit the list on the same page.
 
 ### Sharing
 
