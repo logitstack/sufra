@@ -3,7 +3,8 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { shareRecipe, deleteRecipe, forkRecipe } from './actions';
-import { cookRecipe } from '@/app/(app)/pantry/actions';
+import { cookRecipe, setPantryItemStatus, type CookedStatusItem } from '@/app/(app)/pantry/actions';
+import { STATUS_LABEL, type PantryStatus } from '@/app/lib/units';
 
 export default function RecipeActions({
   recipeId,
@@ -27,6 +28,7 @@ export default function RecipeActions({
   const [servingsMade, setServingsMade] = useState(String(defaultServings));
   const [cooking, setCooking] = useState(false);
   const [cookDone, setCookDone] = useState(false);
+  const [statusItems, setStatusItems] = useState<CookedStatusItem[]>([]);
 
   async function handleShare(e: React.FormEvent) {
     e.preventDefault();
@@ -64,13 +66,35 @@ export default function RecipeActions({
   async function handleCook() {
     setCooking(true);
     try {
-      await cookRecipe(recipeId, parseInt(servingsMade) || defaultServings);
+      const { statusItems } = await cookRecipe(recipeId, parseInt(servingsMade) || defaultServings);
+      setStatusItems(statusItems);
       setCookDone(true);
-      setTimeout(() => { setCookOpen(false); setCookDone(false); setCooking(false); router.refresh(); }, 1500);
+      setCooking(false);
+      if (statusItems.length === 0) {
+        setTimeout(() => { setCookOpen(false); setCookDone(false); router.refresh(); }, 1500);
+      }
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Could not update pantry');
       setCooking(false);
     }
+  }
+
+  async function handleStatus(item: CookedStatusItem, status: PantryStatus) {
+    const previous = statusItems;
+    setStatusItems(statusItems.map(s => s.ingredient_id === item.ingredient_id ? { ...s, status } : s));
+    try {
+      await setPantryItemStatus(item.ingredient_id, status);
+    } catch (err) {
+      setStatusItems(previous);
+      alert(err instanceof Error ? err.message : 'Could not update pantry');
+    }
+  }
+
+  function closeCook() {
+    setCookOpen(false);
+    setCookDone(false);
+    setStatusItems([]);
+    router.refresh();
   }
 
   return (
@@ -126,7 +150,7 @@ export default function RecipeActions({
 
       {/* Cook modal */}
       {cookOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/40 backdrop-blur-sm" onClick={() => !cooking && setCookOpen(false)}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/40 backdrop-blur-sm" onClick={() => !cooking && (cookDone ? closeCook() : setCookOpen(false))}>
           <div className="bg-beige-50 border border-beige-200 rounded-sm shadow-card-hover w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
             {cookDone ? (
               <div className="text-center py-4">
@@ -137,6 +161,32 @@ export default function RecipeActions({
                 </div>
                 <h3 className="font-display text-2xl text-maroon-900 mb-1">Pantry updated.</h3>
                 <p className="text-sm text-beige-700">Ingredients deducted based on servings cooked.</p>
+                {statusItems.length > 0 && (
+                  <div className="mt-6 text-left">
+                    <p className="text-sm text-ink/85 mb-3">Did any of these run low?</p>
+                    <ul className="space-y-2">
+                      {statusItems.map(item => (
+                        <li key={item.ingredient_id} className="flex items-center justify-between gap-3">
+                          <span className="text-sm text-ink/85 truncate">{item.name}</span>
+                          <div className="flex gap-1 flex-shrink-0">
+                            {(['have', 'low', 'out'] as const).map(st => (
+                              <button
+                                key={st}
+                                onClick={() => handleStatus(item, st)}
+                                className={`px-2 py-1 text-[11px] rounded-sm border transition ${item.status === st ? 'bg-maroon-900 border-maroon-900 text-beige-50' : 'border-beige-200 text-maroon-900 hover:border-maroon-700'}`}
+                              >
+                                {STATUS_LABEL[st]}
+                              </button>
+                            ))}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="flex justify-end mt-5">
+                      <button onClick={closeCook} className="px-5 py-2 bg-maroon-900 text-beige-50 rounded-sm hover:bg-maroon-700 transition text-sm font-medium">Done</button>
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <>

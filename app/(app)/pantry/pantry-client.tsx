@@ -3,8 +3,9 @@
 import { useState, useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { addPantryItem, updatePantryItem, deletePantryItem } from './actions';
+import { addPantryItem, updatePantryItem, deletePantryItem, setPantryItemStatus, setTrackingMode } from './actions';
 import type { PantryRow } from './page';
+import { STATUS_LABEL, type PantryStatus } from '@/app/lib/units';
 
 const CATEGORY_ORDER = ['spice', 'produce', 'protein', 'dairy', 'grain', 'pantry', 'condiment', 'other'];
 const CATEGORY_LABELS: Record<string, string> = {
@@ -162,6 +163,45 @@ function PantryRowEditor({ row, onChange }: { row: PantryRow; onChange: () => vo
     onChange();
   }
 
+  async function handleStatus(status: PantryStatus) {
+    try {
+      await setPantryItemStatus(row.ingredient_id, status);
+      onChange();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Save failed');
+    }
+  }
+
+  async function handleMode() {
+    setSaving(true);
+    try {
+      await setTrackingMode(row.ingredient_id, row.mode === 'status' ? 'measured' : 'status');
+      setEditing(false);
+      onChange();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const modeToggle = (
+    <button onClick={handleMode} disabled={saving} className="px-3 py-1.5 text-xs text-beige-700 hover:text-maroon-900 disabled:opacity-50">
+      {row.mode === 'status' ? 'Track by amount' : 'Track by status only'}
+    </button>
+  );
+
+  if (editing && row.mode === 'status') {
+    return (
+      <div className="flex flex-wrap items-center gap-2 p-3 bg-white border border-maroon-300 rounded-sm">
+        <span className="flex-1 min-w-[120px] font-medium text-ink/85 text-sm">{row.canonical_name}</span>
+        <p className="w-full sm:w-auto text-xs text-beige-700">Tracked by status. Cooking doesn't deduct it.</p>
+        {modeToggle}
+        <button onClick={() => setEditing(false)} className="px-3 py-1.5 text-xs text-beige-700 hover:text-maroon-900">Close</button>
+      </div>
+    );
+  }
+
   if (editing) {
     return (
       <div className="flex flex-wrap items-center gap-2 p-3 bg-white border border-maroon-300 rounded-sm">
@@ -183,6 +223,7 @@ function PantryRowEditor({ row, onChange }: { row: PantryRow; onChange: () => vo
         <button onClick={handleSave} disabled={saving} className="px-3 py-1.5 bg-maroon-900 text-beige-50 rounded-sm text-xs disabled:opacity-50">
           {saving ? 'Saving…' : 'Save'}
         </button>
+        {modeToggle}
         <button onClick={() => setEditing(false)} className="px-3 py-1.5 text-xs text-beige-700 hover:text-maroon-900">Cancel</button>
       </div>
     );
@@ -191,14 +232,28 @@ function PantryRowEditor({ row, onChange }: { row: PantryRow; onChange: () => vo
   return (
     <div className="flex items-center justify-between gap-3 p-3 bg-white border border-beige-200 rounded-sm hover:border-maroon-300 transition group">
       <div className="flex items-center gap-3 min-w-0 flex-1">
-        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isEmpty ? 'bg-beige-200' : isExpired ? 'bg-maroon-700' : 'bg-maroon-300'}`} />
+        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isEmpty ? 'bg-beige-200' : isExpired || (row.mode === 'status' && row.status === 'low') ? 'bg-maroon-700' : 'bg-maroon-300'}`} />
         <span className="text-sm text-ink/85 truncate">{row.canonical_name}</span>
         {isExpired && <span className="text-[10px] tracking-eyebrow uppercase text-maroon-700">expired</span>}
       </div>
       <div className="flex items-center gap-3 flex-shrink-0">
-        <span className="text-sm text-maroon-900 font-medium tnum">
-          {row.amountText}
-        </span>
+        {row.mode === 'status' ? (
+          <div className="flex gap-1">
+            {(['have', 'low', 'out'] as const).map(st => (
+              <button
+                key={st}
+                onClick={() => handleStatus(st)}
+                className={`px-2 py-1 text-[11px] rounded-sm border transition ${row.status === st ? 'bg-maroon-900 border-maroon-900 text-beige-50' : 'border-beige-200 text-maroon-900 hover:border-maroon-700'}`}
+              >
+                {STATUS_LABEL[st]}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <span className="text-sm text-maroon-900 font-medium tnum">
+            {row.amountText}
+          </span>
+        )}
         <button
           onClick={() => setEditing(true)}
           className="opacity-0 group-hover:opacity-100 transition text-xs text-beige-700 hover:text-maroon-900"
@@ -280,6 +335,7 @@ function AddPantryModal({ onClose, onSaved }: { onClose: () => void; onSaved: ()
               </select>
             </div>
           </div>
+          <p className="text-[11px] text-beige-700 -mt-2">Spices, sauces and staples like oil and eggs are tracked as have it, running low or out, so their amount is ignored.</p>
           <div>
             <label className="block text-[10px] tracking-eyebrow uppercase text-beige-700 mb-1.5">Expiration (optional)</label>
             <input

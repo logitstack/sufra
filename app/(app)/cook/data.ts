@@ -37,7 +37,7 @@ export async function loadCookData(supabase: Supabase, userId: string, recipeId?
 
   const [{ data: recipeRows }, { data: pantryRows }, staples] = await Promise.all([
     recipeQuery,
-    supabase.from('pantry').select('ingredient_id, quantity_on_hand, unit, purchased_at, last_updated').eq('user_id', userId),
+    supabase.from('pantry').select('ingredient_id, quantity_on_hand, unit, status, purchased_at, last_updated').eq('user_id', userId),
     loadStaples(supabase, userId)
   ]);
 
@@ -50,6 +50,7 @@ export async function loadCookData(supabase: Supabase, userId: string, recipeId?
     ingredient_id: p.ingredient_id,
     quantity_on_hand: Number(p.quantity_on_hand),
     unit: p.unit,
+    status: p.status,
     // Rows added before purchase dates existed fall back to their last update.
     since: p.purchased_at ?? (p.last_updated ? String(p.last_updated).slice(0, 10) : null)
   }));

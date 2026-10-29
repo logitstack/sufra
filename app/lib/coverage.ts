@@ -2,7 +2,7 @@
  * "What can I make": compare recipes against the pantry in base units.
  */
 
-import { addToNeed, emptyNeed, toBase, type IngredientUnits, type Need } from './units';
+import { addToNeed, emptyNeed, pantryStatusOf, toBase, type IngredientUnits, type Need } from './units';
 
 export type CoverageRecipe = {
   id: string;
@@ -15,6 +15,8 @@ export type CoveragePantryRow = {
   ingredient_id: string;
   quantity_on_hand: number;
   unit: string | null;
+  /** have / low / out for status-tracked rows. */
+  status: string | null;
   /** Purchase date of the oldest stock (YYYY-MM-DD), or null. */
   since: string | null;
 };
@@ -39,6 +41,7 @@ export type Coverage = {
  * doesn't cover. An ingredient counts as covered when the pantry has at least
  * the needed amount; when either side's unit can't be converted, having any
  * of it counts, since we can't do better than that without guessing.
+ * Status-tracked ingredients are covered unless marked out.
  */
 export function computeCoverage(
   recipes: CoverageRecipe[],
@@ -73,7 +76,13 @@ export function computeCoverage(
       const hasAny = qty > 0;
 
       let covered: boolean;
-      if (!hasAny) covered = false;
+      if (ing.tracking_mode === 'status') {
+        if (pantryStatusOf(row) === 'out') {
+          missing.push({ ingredient_id: ingredientId, name: ing.name, need: { base: ing.purchase?.size ?? 0, unresolved: [] } });
+          continue;
+        }
+        covered = true;
+      } else if (!hasAny) covered = false;
       else if (have == null || need.unresolved.length > 0) covered = true;  // can't compare: having some counts
       else covered = have >= need.base * 0.999 || (toTaste && need.base === 0);
 

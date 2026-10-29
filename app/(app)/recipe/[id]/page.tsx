@@ -4,24 +4,11 @@ import { notFound } from 'next/navigation';
 import { createServerSupabase } from '@/app/lib/supabase-server';
 import { CATEGORY_LABEL } from '@/app/lib/types';
 import RecipeActions from './recipe-actions';
+import IngredientList from './ingredient-list';
 
 export const dynamic = 'force-dynamic';
 
 const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?auto=format&fit=crop&w=1600&q=80';
-
-function formatQuantity(qty: number | null): string {
-  if (qty === null || qty === undefined) return '';
-  const fractions: Record<string, string> = {
-    '0.25': '¼', '0.5': '½', '0.75': '¾',
-    '0.33': '⅓', '0.67': '⅔',
-    '0.125': '⅛', '0.375': '⅜', '0.625': '⅝', '0.875': '⅞'
-  };
-  const whole = Math.floor(qty);
-  const frac = qty - whole;
-  const fracStr = fractions[frac.toFixed(2)] ?? (frac === 0 ? '' : ` ${frac.toFixed(2)}`);
-  if (whole === 0 && fracStr) return fracStr.trim();
-  return `${whole}${fracStr}`;
-}
 
 export default async function RecipeDetailPage({ params }: { params: { id: string } }) {
   const supabase = createServerSupabase();
@@ -120,35 +107,15 @@ export default async function RecipeDetailPage({ params }: { params: { id: strin
       <div className="mt-12 grid grid-cols-1 lg:grid-cols-[1fr_1.5fr] gap-12 lg:gap-16">
         <section className="rise-in delay-2">
           <div className="lg:sticky lg:top-24">
-            <div className="flex items-baseline justify-between mb-5">
-              <h2 className="font-display text-2xl text-maroon-900">Ingredients</h2>
-              <span className="text-xs tracking-eyebrow uppercase text-beige-700 tnum">
-                Serves {recipe.servings_yield}
-              </span>
-            </div>
-
-            <ul className="space-y-3">
-              {ingredients.map((ing: any, i: number) => (
-                <li key={i} className="flex gap-3 items-baseline">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-maroon-700 flex-shrink-0 translate-y-[-2px]" />
-                  <div className="text-sm leading-relaxed">
-                    {(ing.quantity !== null || ing.unit) && (
-                      <span className="text-maroon-900 font-medium tnum mr-1">
-                        {formatQuantity(ing.quantity)}
-                        {ing.unit ? ` ${ing.unit.replace('_', ' ')}` : ''}
-                      </span>
-                    )}
-                    <span className="text-ink/85">
-                      {ing.display_name ?? ing.ingredients?.canonical_name ?? ing.raw_text ?? ''}
-                    </span>
-                    {ing.prep_note && <span className="text-beige-700 italic">, {ing.prep_note}</span>}
-                  </div>
-                </li>
-              ))}
-              {ingredients.length === 0 && (
-                <li className="text-sm text-beige-700 italic">No ingredients listed.</li>
-              )}
-            </ul>
+            <IngredientList
+              servingsYield={recipe.servings_yield}
+              ingredients={ingredients.map((ing: any) => ({
+                quantity: ing.quantity != null ? Number(ing.quantity) : null,
+                unit: ing.unit,
+                name: ing.display_name ?? ing.ingredients?.canonical_name ?? ing.raw_text ?? '',
+                prep_note: ing.prep_note
+              }))}
+            />
           </div>
         </section>
 

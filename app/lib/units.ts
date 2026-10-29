@@ -17,11 +17,17 @@
 
 export type BaseUnit = 'g' | 'count';
 
+/** measured: the pantry holds an amount. status: only have / low / out. */
+export type TrackingMode = 'measured' | 'status';
+export type PantryStatus = 'have' | 'low' | 'out';
+
 export type IngredientUnits = {
   id: string;
   name: string;
   category: string;
   base_unit: BaseUnit;
+  /** Effective mode: the user's choice, else the ingredient's, else its category's. */
+  tracking_mode: TrackingMode;
   /** What one count is called ('clove', 'bunch'). null means "each". */
   count_unit: string | null;
   /** g per ml. */
@@ -208,12 +214,76 @@ export function pluralUnit(unit: string, n: number): string {
   return ES_PLURAL.has(unit) ? `${label}es` : `${label}s`;
 }
 
+// =============================================================================
+// FRACTIONS
+// Cups and spoons read as cooking fractions ("1 1/2 cups", "1/3 tsp"), never
+// decimals. Metric amounts stay decimal.
+// =============================================================================
+
+const COOKING_FRACTIONS: Array<[number, string]> = [
+  [0, ''], [1 / 8, '1/8'], [1 / 4, '1/4'], [1 / 3, '1/3'], [1 / 2, '1/2'], [2 / 3, '2/3'], [3 / 4, '3/4'], [1, '']
+];
+
+/** Units shown as plain decimals rather than fractions. */
+const DECIMAL_UNITS = new Set(['g', 'kg', 'ml', 'l']);
+
+/** Round to the nearest common cooking fraction: 1.5 -> "1 1/2", 0.333 -> "1/3". */
+export function formatFraction(n: number): string {
+  if (!(n > 0)) return '0';
+  let whole = Math.floor(n);
+  const rest = n - whole;
+  let best = COOKING_FRACTIONS[0];
+  for (const f of COOKING_FRACTIONS) if (Math.abs(rest - f[0]) < Math.abs(rest - best[0])) best = f;
+  if (best[0] === 1) whole += 1;
+  if (whole === 0) return best[1] || '1/8';  // Never round a real amount down to nothing
+  return best[1] ? `${whole} ${best[1]}` : `${whole}`;
+}
+
+function formatDecimal(n: number): string {
+  if (n >= 10) return Math.round(n).toString();
+  return (Math.round(n * 100) / 100).toString();
+}
+
+/**
+ * A recipe amount as entered (or scaled): fractions for everything except
+ * metric units. "1 1/2 cups", "1/3 tsp", "2 1/2 lb", "250 g", "2".
+ */
+export function formatRecipeQuantity(quantity: number, unit: string | null | undefined): string {
+  return DECIMAL_UNITS.has(canonicalUnit(unit)) ? formatDecimal(quantity) : formatFraction(quantity);
+}
+
+/**
+ * Parse what a cook types: "1 1/2", "1-1/2", "3/4", "1.5", "½", "1½".
+ * Returns null for blank or unreadable input.
+ */
+export function parseQuantity(input: string | null | undefined): number | null {
+  if (!input) return null;
+  const vulgar: Record<string, string> = {
+    '¼': '1/4', '½': '1/2', '¾': '3/4', '⅓': '1/3', '⅔': '2/3', '⅛': '1/8', '⅜': '3/8', '⅝': '5/8', '⅞': '7/8'
+  };
+  const s = input.trim()
+    .replace(/(\d)([¼½¾⅓⅔⅛⅜⅝⅞])/g, '$1 $2')
+    .replace(/[¼½¾⅓⅔⅛⅜⅝⅞]/g, c => vulgar[c])
+    .replace(/^(\d+)-(\d+\/\d+)$/, '$1 $2');
+  if (!s) return null;
+  const mixed = s.match(/^(\d+)\s+(\d+)\/(\d+)$/);
+  if (mixed) return Number(mixed[3]) > 0 ? Number(mixed[1]) + Number(mixed[2]) / Number(mixed[3]) : null;
+  const frac = s.match(/^(\d+)\/(\d+)$/);
+  if (frac) return Number(frac[2]) > 0 ? Number(frac[1]) / Number(frac[2]) : null;
+  if (!/^\d*\.?\d+$/.test(s)) return null;
+  return parseFloat(s);
+}
+
+/** Pantry and list amounts in these units read as fractions too. */
+const FRACTION_DISPLAY_UNITS = new Set(['tsp', 'tbsp', 'cup']);
+
 /** "2 tsp", "1 can", "3" — an amount in its own unit. */
 export function formatAmount(quantity: number, unit: string): string {
   const u = unit === 'each' ? '' : unit;
-  const n = roundNicely(quantity);
+  const n = FRACTION_DISPLAY_UNITS.has(u) ? formatFraction(quantity) : roundNicely(quantity);
   return u ? `${n} ${pluralUnit(u, quantity)}` : n;
 }
+
 
 /** "2 tsp + 1 can" */
 export function formatUnresolved(parts: UnresolvedPart[]): string {
@@ -392,6 +462,26 @@ export function sizeLabel(quantity: number, unit: string): string {
 }
 
 /** Common sizes to offer when we don't know what the user usually buys. */
+// =============================================================================
+// PANTRY STATUS
+// =============================================================================
+
+/**
+ * Status of a status-tracked pantry row. Rows saved before tracking modes
+ * existed have no status: any amount on hand reads as 'have'.
+ */
+export function pantryStatusOf(row: { status?: string | null; quantity_on_hand: number } | null | undefined): PantryStatus {
+  if (!row) return 'out';
+  if (row.status === 'have' || row.status === 'low' || row.status === 'out') return row.status;
+  return Number(row.quantity_on_hand) > 0 ? 'have' : 'out';
+}
+
+export const STATUS_LABEL: Record<PantryStatus, string> = {
+  have: 'Have it',
+  low: 'Running low',
+  out: 'Out'
+};
+
 export function commonSizes(ing: IngredientUnits): Array<{ quantity: number; unit: string }> {
   if (ing.base_unit === 'count') {
     return ing.count_unit ? [{ quantity: 1, unit: '' }, { quantity: 2, unit: '' }] : [{ quantity: 1, unit: '' }, { quantity: 6, unit: '' }, { quantity: 12, unit: '' }];

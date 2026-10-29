@@ -5,7 +5,7 @@
 
 import { z } from 'zod';
 import { claudeJson } from './anthropic';
-import { canonicalUnit } from './units';
+import { canonicalUnit, parseQuantity } from './units';
 import type { Category } from './types';
 
 export type ExtractedRecipe = {
@@ -159,11 +159,11 @@ function parseIngredientLine(line: string): ExtractedRecipe['ingredients'][0] {
   const trimmed = line.trim();
 
   // Quantity at start (decimal, fraction, or mixed)
-  const qtyMatch = trimmed.match(/^(\d+(?:\s+\d+\/\d+)?|\d+\/\d+|\d+(?:\.\d+)?)\s*/);
+  const qtyMatch = trimmed.match(/^(\d+\s*[¼½¾⅓⅔⅛⅜⅝⅞]|[¼½¾⅓⅔⅛⅜⅝⅞]|\d+\s+\d+\/\d+|\d+\/\d+|\d*\.\d+|\d+)\s*/);
   let quantity: number | null = null;
   let rest = trimmed;
   if (qtyMatch) {
-    quantity = parseQty(qtyMatch[1]);
+    quantity = parseQuantity(qtyMatch[1]);
     rest = trimmed.slice(qtyMatch[0].length).trim();
   }
 
@@ -203,16 +203,6 @@ function parseIngredientLine(line: string): ExtractedRecipe['ingredients'][0] {
 
   if (sizeNote) prep = prep ? `${sizeNote}, ${prep}` : sizeNote;
   return { quantity, unit, name: rest.toLowerCase(), prep_note: prep };
-}
-
-function parseQty(s: string): number | null {
-  const trimmed = s.trim();
-  const mixedMatch = trimmed.match(/^(\d+)\s+(\d+)\/(\d+)$/);
-  if (mixedMatch) return parseInt(mixedMatch[1]) + parseInt(mixedMatch[2]) / parseInt(mixedMatch[3]);
-  const fracMatch = trimmed.match(/^(\d+)\/(\d+)$/);
-  if (fracMatch) return parseInt(fracMatch[1]) / parseInt(fracMatch[2]);
-  const n = parseFloat(trimmed);
-  return isNaN(n) ? null : n;
 }
 
 function parseYield(y: unknown): number {

@@ -5,7 +5,7 @@
 import { z } from 'zod';
 import type { createServerSupabase } from './supabase-server';
 import { claudeJson } from './anthropic';
-import type { BaseUnit, IngredientUnits } from './units';
+import type { BaseUnit, IngredientUnits, TrackingMode } from './units';
 
 type Supabase = ReturnType<typeof createServerSupabase>;
 
@@ -48,6 +48,7 @@ Same ingredient: "yellow onion" and "onion", "extra virgin olive oil" and "olive
 Different ingredients: "kosher salt" and "salt", "chicken thighs" and "chicken breast", "brown sugar" and "sugar", "flaky sea salt" and "salt".
 
 For each input, set existing to the matching canonical name copied exactly from the list, or null. When null, describe a new ingredient:
+- category: spice for dried spices, herbs and seasonings; condiment for sauces, pastes, oils, vinegars and dressings; otherwise the closest fit.
 - canonical_name: short, lowercase, singular for produce ("onion") and plural where usual ("eggs", "chickpeas").
 - base_unit: "count" for things counted whole (eggs, onions, lemons, garlic cloves, herb bunches), otherwise "g".
 - count_unit: what one count is called when it is not a whole item ("clove" for garlic, "bunch" for herbs), else null.
@@ -174,10 +175,10 @@ export async function loadIngredientUnits(
   const out = new Map<string, IngredientUnits>();
   if (ids.length === 0) return out;
 
-  const [{ data: ingredients }, { data: conversions }, { data: purchases }] = await Promise.all([
+  const [{ data: ingredients }, { data: conversions }, { data: purchases }, { data: categoryModes }, { data: userModes }] = await Promise.all([
     supabase
       .from('ingredients')
-      .select('id, canonical_name, category, base_unit, count_unit, density_g_per_ml, grams_per_count, default_unit, purchase_unit, purchase_size, purchase_label')
+      .select('id, canonical_name, category, base_unit, count_unit, density_g_per_ml, grams_per_count, default_unit, purchase_unit, purchase_size, purchase_label, tracking_mode')
       .in('id', ids),
     supabase
       .from('ingredient_conversions')
@@ -187,8 +188,17 @@ export async function loadIngredientUnits(
       .from('user_purchase_sizes')
       .select('ingredient_id, unit, size, label')
       .eq('user_id', userId)
+      .in('ingredient_id', ids),
+    supabase.from('ingredient_category_modes').select('category, tracking_mode'),
+    supabase
+      .from('user_ingredient_modes')
+      .select('ingredient_id, tracking_mode')
+      .eq('user_id', userId)
       .in('ingredient_id', ids)
   ]);
+
+  const modeByCategory = new Map((categoryModes ?? []).map(c => [c.category as string, c.tracking_mode as TrackingMode]));
+  const modeByUser = new Map((userModes ?? []).map(m => [m.ingredient_id as string, m.tracking_mode as TrackingMode]));
 
   for (const i of ingredients ?? []) {
     out.set(i.id, {
@@ -196,6 +206,7 @@ export async function loadIngredientUnits(
       name: i.canonical_name,
       category: i.category,
       base_unit: (i.base_unit as BaseUnit) ?? 'g',
+      tracking_mode: modeByUser.get(i.id) ?? (i.tracking_mode as TrackingMode | null) ?? modeByCategory.get(i.category) ?? 'measured',
       count_unit: i.count_unit,
       density: i.density_g_per_ml != null ? Number(i.density_g_per_ml) : null,
       grams_per_count: i.grams_per_count != null ? Number(i.grams_per_count) : null,

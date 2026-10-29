@@ -9,6 +9,7 @@ import { uploadRecipeImage } from '@/app/lib/upload';
 import { createRecipe, type IngredientInput } from './actions';
 import { importFromUrl, importFromText, importFromImageBase64 } from './import-actions';
 import type { ExtractedRecipe } from '@/app/lib/recipe-extractor';
+import { formatRecipeQuantity, parseQuantity } from '@/app/lib/units';
 
 const CATEGORIES: Category[] = ['meat', 'vegetarian', 'baked_goods', 'desserts', 'drinks'];
 const PREFILL_KEY = 'sufra:recipe-prefill';
@@ -47,27 +48,8 @@ type ImportMode = 'link' | 'paste' | 'photo';
 
 function newId() { return Math.random().toString(36).slice(2, 9); }
 
-function parseQuantity(s: string): number | null {
-  const trimmed = s.trim();
-  if (!trimmed) return null;
-  const mixedMatch = trimmed.match(/^(\d+)\s+(\d+)\/(\d+)$/);
-  if (mixedMatch) {
-    const [, w, n, d] = mixedMatch;
-    return parseInt(w) + parseInt(n) / parseInt(d);
-  }
-  const fracMatch = trimmed.match(/^(\d+)\/(\d+)$/);
-  if (fracMatch) {
-    const [, n, d] = fracMatch;
-    return parseInt(n) / parseInt(d);
-  }
-  const num = parseFloat(trimmed);
-  return isNaN(num) ? null : num;
-}
-
-function formatQty(n: number | null): string {
-  if (n === null) return '';
-  if (Number.isInteger(n)) return n.toString();
-  return n.toFixed(2).replace(/\.?0+$/, '');
+function formatQty(n: number | null, unit: string | null): string {
+  return n === null ? '' : formatRecipeQuantity(n, unit);
 }
 
 export default function NewRecipePage() {
@@ -121,7 +103,7 @@ export default function NewRecipePage() {
     if (data.ingredients && data.ingredients.length > 0) {
       setIngredients(data.ingredients.map(i => ({
         id: newId(),
-        quantity: formatQty(i.quantity),
+        quantity: formatQty(i.quantity, i.unit),
         unit: i.unit ?? '',
         name: i.name,
         prep_note: i.prep_note ?? ''
@@ -224,6 +206,11 @@ export default function NewRecipePage() {
     setErrorMsg('');
     if (!name.trim()) {
       setErrorMsg('Recipe name is required');
+      return;
+    }
+    const unreadable = ingredients.find(i => i.name.trim() && i.quantity.trim() && parseQuantity(i.quantity) === null);
+    if (unreadable) {
+      setErrorMsg(`Can't read the amount "${unreadable.quantity}" for ${unreadable.name.trim()}. Use a number like 2, 1/2, 1 1/2 or 0.75.`);
       return;
     }
     setSaving(true);
@@ -450,7 +437,7 @@ export default function NewRecipePage() {
         <div className="space-y-2">
           {ingredients.map(ing => (
             <div key={ing.id} className="grid grid-cols-[64px_88px_1fr_36px] sm:grid-cols-[80px_100px_1fr_180px_36px] gap-2 items-center">
-              <input type="text" inputMode="decimal" value={ing.quantity} onChange={e => updateIngredient(ing.id, 'quantity', e.target.value)} placeholder="Qty" className="px-2 py-2 bg-white border border-beige-200 rounded-sm text-sm tnum text-center focus:outline-none focus:border-maroon-700 focus:ring-1 focus:ring-maroon-700 transition" />
+              <input type="text" value={ing.quantity} onChange={e => updateIngredient(ing.id, 'quantity', e.target.value)} placeholder="1 1/2" className="px-2 py-2 bg-white border border-beige-200 rounded-sm text-sm tnum text-center focus:outline-none focus:border-maroon-700 focus:ring-1 focus:ring-maroon-700 transition" />
               <select value={ing.unit} onChange={e => updateIngredient(ing.id, 'unit', e.target.value)} className="px-2 py-2 bg-white border border-beige-200 rounded-sm text-sm focus:outline-none focus:border-maroon-700 focus:ring-1 focus:ring-maroon-700 transition">
                 {COMMON_UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
               </select>

@@ -3,8 +3,8 @@
 import { createServerSupabase } from '@/app/lib/supabase-server';
 import { revalidatePath } from 'next/cache';
 import { loadIngredientUnits, resolveIngredient } from '@/app/lib/ingredients';
-import { adjustPantry, pantryUnit } from '@/app/lib/pantry';
-import { toBase } from '@/app/lib/units';
+import { adjustPantry, pantryUnit, setPantryStatus } from '@/app/lib/pantry';
+import { pantryStatusOf, toBase, type PantryStatus, type TrackingMode } from '@/app/lib/units';
 
 /**
  * Turn an entered amount into what the pantry row stores: base units when the
@@ -33,11 +33,22 @@ export async function addPantryItem(input: {
   if (!user) throw new Error('Not authenticated');
 
   if (!input.ingredient_name.trim()) throw new Error('Ingredient name is required');
-  if (input.quantity <= 0) throw new Error('Quantity must be positive');
 
   const ingredientId = await resolveIngredient(supabase, input.ingredient_name);
   const ing = (await loadIngredientUnits(supabase, [ingredientId], user.id)).get(ingredientId);
   if (!ing) throw new Error('Could not load ingredient');
+
+  // Spices, sauces and other status-tracked items only need "have it".
+  if (ing.tracking_mode === 'status') {
+    await setPantryStatus(supabase, user.id, ing, 'have', { purchased: true });
+    if (input.expiration_date) {
+      await supabase.from('pantry').update({ expiration_date: input.expiration_date })
+        .eq('user_id', user.id).eq('ingredient_id', ingredientId);
+    }
+    revalidatePath('/pantry');
+    return;
+  }
+  if (input.quantity <= 0) throw new Error('Quantity must be positive');
 
   const { error: upsertError } = await supabase
     .from('pantry')
@@ -84,12 +95,58 @@ export async function deletePantryItem(pantryId: string) {
   revalidatePath('/pantry');
 }
 
+/** Set a status-tracked pantry item to have / low / out. */
+export async function setPantryItemStatus(ingredientId: string, status: PantryStatus) {
+  const supabase = createServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+  const ing = (await loadIngredientUnits(supabase, [ingredientId], user.id)).get(ingredientId);
+  if (!ing) throw new Error('Could not load ingredient');
+  await setPantryStatus(supabase, user.id, ing, status, { purchased: status === 'have' });
+  revalidatePath('/pantry');
+}
+
 /**
- * Mark a recipe as cooked. Deducts each ingredient from the pantry in base
- * units, scaled by (servings_made / recipe.servings_yield). Amounts with no
- * known conversion are skipped rather than guessed.
+ * Switch an ingredient between measured and status tracking for this user.
+ * Going to status keeps whether any was on hand; going to measured keeps the
+ * last amount (often zero, so the pantry asks for one).
  */
-export async function cookRecipe(recipeId: string, servingsMade: number) {
+export async function setTrackingMode(ingredientId: string, mode: TrackingMode) {
+  const supabase = createServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+
+  const { error } = await supabase.from('user_ingredient_modes').upsert({
+    user_id: user.id,
+    ingredient_id: ingredientId,
+    tracking_mode: mode,
+    updated_at: new Date().toISOString()
+  }, { onConflict: 'user_id,ingredient_id' });
+  if (error) throw new Error(error.message);
+
+  if (mode === 'status') {
+    const { data: row } = await supabase
+      .from('pantry')
+      .select('id, status, quantity_on_hand')
+      .eq('user_id', user.id)
+      .eq('ingredient_id', ingredientId)
+      .maybeSingle();
+    if (row && !row.status) {
+      await supabase.from('pantry').update({ status: pantryStatusOf(row) }).eq('id', row.id);
+    }
+  }
+  revalidatePath('/pantry');
+}
+
+export type CookedStatusItem = { ingredient_id: string; name: string; status: PantryStatus };
+
+/**
+ * Mark a recipe as cooked. Deducts each measured ingredient from the pantry in
+ * base units, scaled by (servings_made / recipe.servings_yield). Amounts with
+ * no known conversion are skipped rather than guessed. Status-tracked
+ * ingredients are returned for quick "running low" / "out" updates.
+ */
+export async function cookRecipe(recipeId: string, servingsMade: number): Promise<{ statusItems: CookedStatusItem[] }> {
   const supabase = createServerSupabase();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
@@ -122,6 +179,19 @@ export async function cookRecipe(recipeId: string, servingsMade: number) {
     await adjustPantry(supabase, user.id, units.get(ingredientId)!, -base);
   }
 
+  // Status-tracked items aren't deducted. Hand them back so the cook can mark
+  // any that ran low.
+  const statusIds = Array.from(new Set(ris.map(r => r.ingredient_id)))
+    .filter(id => units.get(id)?.tracking_mode === 'status');
+  const { data: statusRows } = statusIds.length
+    ? await supabase.from('pantry').select('ingredient_id, status, quantity_on_hand').eq('user_id', user.id).in('ingredient_id', statusIds)
+    : { data: [] };
+  const statusById = new Map((statusRows ?? []).map(r => [r.ingredient_id as string, r]));
+  const statusItems = statusIds
+    .map(id => ({ ingredient_id: id, name: units.get(id)!.name, status: pantryStatusOf(statusById.get(id)) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
   revalidatePath('/pantry');
   revalidatePath(`/recipe/${recipeId}`);
+  return { statusItems };
 }

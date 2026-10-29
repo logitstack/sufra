@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation';
 import { createServerSupabase } from '@/app/lib/supabase-server';
 import { loadIngredientUnits } from '@/app/lib/ingredients';
-import { cookingDisplay, formatAmount, toBase } from '@/app/lib/units';
+import { cookingDisplay, formatAmount, pantryStatusOf, toBase, type PantryStatus, type TrackingMode } from '@/app/lib/units';
 import PantryClient from './pantry-client';
 
 export const dynamic = 'force-dynamic';
@@ -17,6 +17,9 @@ export type PantryRow = {
   editValue: number;
   editUnit: string;
   isEmpty: boolean;
+  mode: TrackingMode;
+  /** For status-tracked rows. */
+  status: PantryStatus;
   expiration_date: string | null;
   last_updated: string;
 };
@@ -28,7 +31,7 @@ export default async function PantryPage() {
 
   const { data } = await supabase
     .from('pantry')
-    .select('id, ingredient_id, quantity_on_hand, unit, expiration_date, last_updated, ingredients(canonical_name, category)')
+    .select('id, ingredient_id, quantity_on_hand, unit, status, expiration_date, last_updated, ingredients(canonical_name, category)')
     .eq('user_id', user.id)
     .order('last_updated', { ascending: false });
 
@@ -37,6 +40,7 @@ export default async function PantryPage() {
     ingredient_id: string;
     quantity_on_hand: number;
     unit: string | null;
+    status: string | null;
     expiration_date: string | null;
     last_updated: string;
     ingredients: { canonical_name: string; category: string } | null;
@@ -59,7 +63,9 @@ export default async function PantryPage() {
       amountText: disp.text,
       editValue: disp.value,
       editUnit: disp.unit,
-      isEmpty: qty <= 0,
+      mode: ing?.tracking_mode ?? 'measured',
+      status: pantryStatusOf(r),
+      isEmpty: ing?.tracking_mode === 'status' ? pantryStatusOf(r) === 'out' : qty <= 0,
       expiration_date: r.expiration_date,
       last_updated: r.last_updated
     };
