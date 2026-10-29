@@ -15,7 +15,7 @@ export default function PlanActions({ planId, existingListId }: { planId: string
     setLoading(true); setError('');
     try {
       const { id } = await generateShoppingList(planId);
-      router.push(`/shopping/${id}`);
+      router.push(`/shopping/${id}/review`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate list');
       setLoading(false);
@@ -47,7 +47,7 @@ export default function PlanActions({ planId, existingListId }: { planId: string
             disabled={loading}
             className="inline-flex items-center gap-2 px-5 py-2.5 bg-maroon-900 text-beige-50 rounded-sm hover:bg-maroon-700 transition text-sm font-medium disabled:opacity-50"
           >
-            {loading ? 'Generating…' : 'Generate shopping list'}
+            {loading ? 'Generating…' : 'Generate grocery list'}
           </button>
         )}
         <div className="flex-1" />

@@ -32,6 +32,7 @@ export async function addMissingToList(recipeId: string): Promise<{ listId: stri
     .from('shopping_lists')
     .select('id')
     .eq('user_id', user.id)
+    .not('finalized_at', 'is', null)
     .is('completed_at', null)
     .order('generated_at', { ascending: false })
     .limit(1)
@@ -41,7 +42,7 @@ export async function addMissingToList(recipeId: string): Promise<{ listId: stri
   if (!listId) {
     const { data: created, error } = await supabase
       .from('shopping_lists')
-      .insert({ user_id: user.id, plan_id: null })
+      .insert({ user_id: user.id, plan_id: null, finalized_at: new Date().toISOString() })
       .select('id')
       .single();
     if (error || !created) throw new Error(`Could not create list: ${error?.message}`);
@@ -50,7 +51,7 @@ export async function addMissingToList(recipeId: string): Promise<{ listId: stri
 
   const { data: existing } = await supabase
     .from('shopping_items')
-    .select('id, ingredient_id, quantity_needed, gross_base, unit, unresolved')
+    .select('id, ingredient_id, quantity_needed, gross_base, unit, unresolved, selected')
     .eq('list_id', listId)
     .eq('checked', false);
 
@@ -60,6 +61,7 @@ export async function addMissingToList(recipeId: string): Promise<{ listId: stri
     if (row) {
       const current = toBase(Number(row.quantity_needed), row.unit, ing) ?? 0;
       await supabase.from('shopping_items').update({
+        selected: true,
         quantity_needed: current + m.need.base,
         gross_base: (row.gross_base != null ? Number(row.gross_base) : current) + m.need.base,
         unit: ing.base_unit,

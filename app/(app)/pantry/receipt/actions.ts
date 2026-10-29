@@ -24,12 +24,13 @@ function cleanName(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-/** Ingredient ids that are unchecked on any open (not completed) grocery list. */
+/** Items still to buy on any open shopping list (finalized, not completed). */
 async function openListItems(supabase: Supabase, userId: string): Promise<Array<{ id: string; ingredient_id: string }>> {
   const { data: lists } = await supabase
     .from('shopping_lists')
     .select('id')
     .eq('user_id', userId)
+    .not('finalized_at', 'is', null)
     .is('completed_at', null);
   const listIds = (lists ?? []).map(l => l.id);
   if (listIds.length === 0) return [];
@@ -37,6 +38,7 @@ async function openListItems(supabase: Supabase, userId: string): Promise<Array<
     .from('shopping_items')
     .select('id, ingredient_id')
     .in('list_id', listIds)
+    .eq('selected', true)
     .eq('checked', false);
   return items ?? [];
 }
@@ -137,7 +139,7 @@ export async function parseReceipt(input:
       on_list: !!ingredientId && onList.has(ingredientId)
     };
     // A known product whose size no longer converts still needs a look.
-    if (line.status === 'known' && ing && perPackageBase(line, ing) == null) line.status = 'uncertain';
+    if (line.status === 'known' && ing && ing.tracking_mode !== 'status' && perPackageBase(line, ing) == null) line.status = 'uncertain';
     lines.push(line);
   });
 
@@ -167,7 +169,8 @@ export async function confirmReceipt(input: {
   for (const line of lines) {
     const ing = units.get(ids.get(cleanName(line.ingredient_name)) ?? '');
     if (!ing) { problems[line.key] = 'Could not find this ingredient'; continue; }
-    const perPackage = perPackageBase(line, ing);
+    // Status-tracked items just become "have it"; their size doesn't matter.
+    const perPackage = perPackageBase(line, ing) ?? (ing.tracking_mode === 'status' ? 1 : null);
     if (perPackage == null) {
       problems[line.key] = ing.base_unit === 'count'
         ? `Enter how many ${ing.name} came in each package`
@@ -193,7 +196,7 @@ export async function confirmReceipt(input: {
         user_id: user.id,
         receipt_text: normalizeReceiptText(line.raw_text),
         ingredient_id: ing.id,
-        package_size: line.sold_by_weight ? null : perPackage,
+        package_size: line.sold_by_weight ? null : perPackageBase(line, ing),
         package_unit: line.sold_by_weight ? null : packageUnit,
         package_label: line.sold_by_weight ? null : label,
         updated_at: now
@@ -201,7 +204,7 @@ export async function confirmReceipt(input: {
     }
 
     // What they actually buy becomes the usual size for the grocery list.
-    if (!line.sold_by_weight && line.size_quantity != null) {
+    if (!line.sold_by_weight && line.size_quantity != null && perPackageBase(line, ing) != null) {
       await supabase.from('user_purchase_sizes').upsert({
         user_id: user.id,
         ingredient_id: ing.id,

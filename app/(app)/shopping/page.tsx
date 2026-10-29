@@ -8,8 +8,8 @@ export default async function ShoppingPage() {
   const { data: lists } = await supabase
     .from('shopping_lists')
     .select(`
-      id, generated_at, completed_at,
-      shopping_items(count),
+      id, generated_at, completed_at, finalized_at,
+      shopping_items(selected),
       meal_plans(name, start_date, end_date)
     `)
     .order('generated_at', { ascending: false });
@@ -37,13 +37,14 @@ export default async function ShoppingPage() {
       ) : (
         <div className="space-y-3">
           {lists.map(list => {
-            const itemCount = (list.shopping_items as Array<{ count: number }>)[0]?.count ?? 0;
+            const itemCount = (list.shopping_items as Array<{ selected: boolean }>).filter(i => i.selected).length;
+            const isDraft = !list.finalized_at;
             const plan = (list.meal_plans as unknown) as { name: string | null; start_date: string; end_date: string } | null;
             const isComplete = !!list.completed_at;
             return (
               <Link
                 key={list.id}
-                href={`/shopping/${list.id}`}
+                href={isDraft ? `/shopping/${list.id}/review` : `/shopping/${list.id}`}
                 className={`block p-5 bg-white border rounded-sm transition group ${isComplete ? 'border-beige-200 opacity-60' : 'border-beige-200 hover:border-maroon-300 hover:shadow-card'}`}
               >
                 <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -53,6 +54,7 @@ export default async function ShoppingPage() {
                     </h2>
                     <p className="text-xs text-beige-700 mt-1 tracking-wide">
                       Generated {formatDate(list.generated_at)} · {itemCount} {itemCount === 1 ? 'item' : 'items'}
+                      {isDraft && ' · Needs review'}
                       {isComplete && ' · Complete'}
                     </p>
                   </div>

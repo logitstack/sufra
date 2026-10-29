@@ -1,12 +1,12 @@
 import Link from 'next/link';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import { createServerSupabase } from '@/app/lib/supabase-server';
 import {
-  commonSizes, conversionQuestion, cookingDisplay, formatAmount, formatUnresolved, purchaseDisplay, sizeForEdit, toBase,
+  commonSizes, conversionQuestion, formatAmount, purchaseDisplay, sizeForEdit,
   type IngredientUnits, type UnresolvedPart
 } from '@/app/lib/units';
 import { loadIngredientUnits } from '@/app/lib/ingredients';
-import { relatedPantry, type PantryRowForMatch } from '@/app/lib/pantry-match';
+import { lineAmount } from '@/app/lib/shopping';
 import ShoppingClient, { type BuyPrefill, type ShoppingItem } from './shopping-client';
 
 export const dynamic = 'force-dynamic';
@@ -31,9 +31,9 @@ export default async function ShoppingDetailPage({ params }: { params: { id: str
   const { data: list } = await supabase
     .from('shopping_lists')
     .select(`
-      id, generated_at, completed_at, plan_id,
+      id, generated_at, completed_at, finalized_at, plan_id,
       shopping_items (
-        id, ingredient_id, quantity_needed, unit, unresolved, checked, store_section
+        id, ingredient_id, quantity_needed, unit, unresolved, checked, selected, store_section
       ),
       meal_plans ( name, start_date, end_date )
     `)
@@ -41,74 +41,37 @@ export default async function ShoppingDetailPage({ params }: { params: { id: str
     .single();
 
   if (!list) notFound();
+  if (!list.finalized_at) redirect(`/shopping/${list.id}/review`);
 
-  // Pantry, used to suggest substitutes for items precise subtraction couldn't
-  // cover (related ingredient or a unit with no known conversion).
-  const { data: pantryRows } = await supabase
-    .from('pantry')
-    .select('ingredient_id, quantity_on_hand, unit, ingredients ( canonical_name )')
-    .eq('user_id', user.id);
-
-  const listItems = ((list.shopping_items ?? []) as unknown) as Array<{
+  const listItems = ((list.shopping_items ?? []) as unknown as Array<{
     id: string;
     ingredient_id: string;
     quantity_needed: number;
     unit: string | null;
     unresolved: UnresolvedPart[] | null;
     checked: boolean;
+    selected: boolean;
     store_section: string | null;
-  }>;
-  const pantryList = ((pantryRows ?? []) as unknown) as Array<{
-    ingredient_id: string;
-    quantity_on_hand: number;
-    unit: string | null;
-    ingredients: { canonical_name: string } | null;
-  }>;
+  }>).filter(i => i.selected);
 
-  const units = await loadIngredientUnits(
-    supabase,
-    [...listItems.map(i => i.ingredient_id), ...pantryList.map(p => p.ingredient_id)],
-    user.id
-  );
-
-  const pantry: PantryRowForMatch[] = pantryList.map(p => {
-    const ing = units.get(p.ingredient_id);
-    const base = ing ? toBase(Number(p.quantity_on_hand), p.unit, ing) : null;
-    return {
-      ingredient_id: p.ingredient_id,
-      canonical_name: p.ingredients?.canonical_name ?? '',
-      convertible: base != null,
-      isEmpty: Number(p.quantity_on_hand) <= 0,
-      amountText: base != null && ing ? cookingDisplay(base, ing).text : formatAmount(Number(p.quantity_on_hand), p.unit ?? '')
-    };
-  });
+  const units = await loadIngredientUnits(supabase, listItems.map(i => i.ingredient_id), user.id);
 
   type Item = ShoppingItem & { section: string };
 
   const items: Item[] = listItems.flatMap(si => {
     const ing = units.get(si.ingredient_id);
     if (!ing) return [];
-
-    // Older lists stored ml / g / count units; toBase reads those too.
-    const unresolved = [...(si.unresolved ?? [])];
-    let base = toBase(Number(si.quantity_needed), si.unit, ing);
-    if (base == null) {
-      unresolved.push({ quantity: Number(si.quantity_needed), unit: si.unit ?? 'each' });
-      base = 0;
-    }
-
-    const purchase = base > 0 ? purchaseDisplay(base, ing) : null;
-    const parts = [purchase?.text, unresolved.length ? formatUnresolved(unresolved) : null].filter(Boolean);
+    const amount = lineAmount(si, ing);
 
     return [{
       id: si.id,
       name: ing.name,
-      qtyText: parts.join(' + '),
-      buy: buyPrefill(base, ing),
+      qtyText: amount.text,
+      statusTracked: ing.tracking_mode === 'status',
+      buy: buyPrefill(amount.base, ing),
       section: si.store_section || ing.category,
       checked: si.checked,
-      suggestions: relatedPantry({ ingredient_id: si.ingredient_id, name: ing.name }, pantry),
-      questions: unresolved.map(part => ({
+      questions: amount.unresolved.map(part => ({
         unit: part.unit,
         partText: formatAmount(part.quantity, part.unit),
         ...conversionQuestion(part.unit, ing)

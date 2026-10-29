@@ -163,16 +163,22 @@ export async function cookRecipe(recipeId: string, servingsMade: number): Promis
     unit: string | null;
     ingredient_id: string;
   }>;
-  const units = await loadIngredientUnits(supabase, ris.map(r => r.ingredient_id), user.id);
+  // Substitutes picked on the grocery review for the plan running today
+  // (red onion instead of shallots) are what actually got used.
+  const substitutes = await currentSubstitutes(supabase, user.id, recipeId);
+  const usedId = (id: string) => substitutes.get(id) ?? id;
+
+  const units = await loadIngredientUnits(supabase, ris.flatMap(r => [r.ingredient_id, usedId(r.ingredient_id)]), user.id);
   const scaleFactor = servingsMade / Math.max(1, recipe.servings_yield);
 
   // Sum per ingredient first so a recipe listing salt twice deducts once.
   const used = new Map<string, number>();
   for (const ri of ris) {
     if (ri.quantity === null) continue;
-    const ing = units.get(ri.ingredient_id);
+    const id = usedId(ri.ingredient_id);
+    const ing = units.get(id);
     const base = ing ? toBase(Number(ri.quantity) * scaleFactor, ri.unit, ing) : null;
-    if (base != null) used.set(ri.ingredient_id, (used.get(ri.ingredient_id) ?? 0) + base);
+    if (base != null) used.set(id, (used.get(id) ?? 0) + base);
   }
 
   for (const [ingredientId, base] of Array.from(used.entries())) {
@@ -181,7 +187,7 @@ export async function cookRecipe(recipeId: string, servingsMade: number): Promis
 
   // Status-tracked items aren't deducted. Hand them back so the cook can mark
   // any that ran low.
-  const statusIds = Array.from(new Set(ris.map(r => r.ingredient_id)))
+  const statusIds = Array.from(new Set(ris.map(r => usedId(r.ingredient_id))))
     .filter(id => units.get(id)?.tracking_mode === 'status');
   const { data: statusRows } = statusIds.length
     ? await supabase.from('pantry').select('ingredient_id, status, quantity_on_hand').eq('user_id', user.id).in('ingredient_id', statusIds)
@@ -194,4 +200,34 @@ export async function cookRecipe(recipeId: string, servingsMade: number): Promis
   revalidatePath('/pantry');
   revalidatePath(`/recipe/${recipeId}`);
   return { statusItems };
+}
+
+/**
+ * Substitutes (ingredient -> substitute) recorded for this recipe's current
+ * meal plan: the most recent plan whose dates include today and that has the
+ * recipe in it.
+ */
+async function currentSubstitutes(
+  supabase: ReturnType<typeof createServerSupabase>,
+  userId: string,
+  recipeId: string
+): Promise<Map<string, string>> {
+  const today = new Date().toISOString().slice(0, 10);
+  const { data: plans } = await supabase
+    .from('meal_plans')
+    .select('id, plan_items!inner(recipe_id)')
+    .eq('user_id', userId)
+    .eq('plan_items.recipe_id', recipeId)
+    .lte('start_date', today)
+    .gte('end_date', today)
+    .order('created_at', { ascending: false })
+    .limit(1);
+  const planId = plans?.[0]?.id;
+  if (!planId) return new Map();
+
+  const { data: subs } = await supabase
+    .from('plan_substitutions')
+    .select('ingredient_id, substitute_ingredient_id')
+    .eq('plan_id', planId);
+  return new Map((subs ?? []).map(s => [s.ingredient_id as string, s.substitute_ingredient_id as string]));
 }

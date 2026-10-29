@@ -3,7 +3,7 @@
 import { createServerSupabase } from '@/app/lib/supabase-server';
 import { revalidatePath } from 'next/cache';
 import { loadIngredientUnits } from '@/app/lib/ingredients';
-import { adjustPantry } from '@/app/lib/pantry';
+import { adjustPantry, setPantryStatus } from '@/app/lib/pantry';
 import { conversionFromAnswer, purchaseDisplay, sizeLabel, toBase, type UnresolvedPart } from '@/app/lib/units';
 
 export type Bought = {
@@ -21,7 +21,8 @@ export type Bought = {
  *
  * If the shopper's package size differs from the usual one (or there was
  * none), it becomes the usual size for next time. Without `bought`, the whole
- * packages the list showed are assumed.
+ * packages the list showed are assumed. Status-tracked items are simply set
+ * to "have it".
  */
 export async function toggleShoppingItem(itemId: string, checked: boolean, bought?: Bought) {
   const supabase = createServerSupabase();
@@ -38,7 +39,10 @@ export async function toggleShoppingItem(itemId: string, checked: boolean, bough
   const ing = checked ? (await loadIngredientUnits(supabase, [item.ingredient_id], user.id)).get(item.ingredient_id) : undefined;
 
   let amount = 0;
-  if (ing && bought && bought.packages > 0) {
+  if (ing?.tracking_mode === 'status') {
+    // No amount to track: buying it just means "have it".
+    await setPantryStatus(supabase, user.id, ing, 'have', { purchased: true });
+  } else if (ing && bought && bought.packages > 0) {
     const perPackage = bought.size_quantity != null ? toBase(bought.size_quantity, bought.size_unit, ing) : toBase(1, '', ing);
     if (perPackage == null) {
       throw new Error(ing.base_unit === 'count'
@@ -66,7 +70,7 @@ export async function toggleShoppingItem(itemId: string, checked: boolean, bough
   const { error } = await supabase.from('shopping_items').update({ checked }).eq('id', itemId);
   if (error) throw new Error(error.message);
 
-  if (ing && amount > 0) {
+  if (ing && ing.tracking_mode !== 'status' && amount > 0) {
     await adjustPantry(supabase, user.id, ing, amount, { purchased: true });
   }
 
@@ -137,6 +141,81 @@ export async function resolveShoppingUnit(itemId: string, unit: string, answerQt
   if (error) throw new Error(error.message);
 
   revalidatePath(`/shopping/${item.list_id}`);
+}
+
+export type ReviewChoice = {
+  itemId: string;
+  selected: boolean;
+  substitute_ingredient_id: string | null;
+};
+
+/**
+ * Finish the review screen: keep the selected items on the list, and record
+ * picked substitutes on the plan so "I cooked this" deducts from them.
+ * Every "you may have something similar" item needs either a check or a
+ * substitute; the names of any that have neither come back unresolved.
+ */
+export async function finalizeShoppingList(listId: string, choices: ReviewChoice[]): Promise<{ ok: true } | { ok: false; unresolved: string[] }> {
+  const supabase = createServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+
+  const { data: list } = await supabase
+    .from('shopping_lists')
+    .select('id, plan_id, shopping_items ( id, ingredient_id, section, suggestions, ingredients ( canonical_name ) )')
+    .eq('id', listId)
+    .single();
+  if (!list) throw new Error('List not found');
+
+  const items = (list.shopping_items ?? []) as unknown as Array<{
+    id: string;
+    ingredient_id: string;
+    section: string;
+    suggestions: Array<{ ingredient_id: string }>;
+    ingredients: { canonical_name: string } | null;
+  }>;
+  const choiceById = new Map(choices.map(c => [c.itemId, c]));
+
+  const unresolved = items
+    .filter(i => i.section === 'similar')
+    .filter(i => {
+      const c = choiceById.get(i.id);
+      return !c || (!c.selected && !c.substitute_ingredient_id);
+    })
+    .map(i => i.ingredients?.canonical_name ?? 'an item');
+  if (unresolved.length > 0) return { ok: false, unresolved };
+
+  for (const item of items) {
+    const c = choiceById.get(item.id);
+    if (!c) continue;
+    // Only a suggested pantry item can be picked as a substitute.
+    const substitute = c.substitute_ingredient_id && item.suggestions.some(s => s.ingredient_id === c.substitute_ingredient_id)
+      ? c.substitute_ingredient_id
+      : null;
+    const { error } = await supabase
+      .from('shopping_items')
+      .update({ selected: c.selected, substitute_ingredient_id: substitute })
+      .eq('id', item.id);
+    if (error) throw new Error(error.message);
+
+    if (list.plan_id) {
+      if (substitute) {
+        await supabase.from('plan_substitutions').upsert(
+          { plan_id: list.plan_id, ingredient_id: item.ingredient_id, substitute_ingredient_id: substitute },
+          { onConflict: 'plan_id,ingredient_id' }
+        );
+      } else {
+        await supabase.from('plan_substitutions').delete().eq('plan_id', list.plan_id).eq('ingredient_id', item.ingredient_id);
+      }
+    }
+  }
+
+  const { error } = await supabase.from('shopping_lists').update({ finalized_at: new Date().toISOString() }).eq('id', listId);
+  if (error) throw new Error(error.message);
+
+  revalidatePath('/shopping');
+  revalidatePath(`/shopping/${listId}`);
+  return { ok: true };
 }
 
 export async function completeShoppingList(listId: string) {
