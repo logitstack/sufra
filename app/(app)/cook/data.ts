@@ -61,6 +61,10 @@ export async function loadCookData(supabase: Supabase, userId: string, recipeId?
     userId
   );
 
-  const coverage = computeCoverage(normalized, pantry, units, new Set(staples.map(s => s.id)));
+  // Water never blocks a match, even if it was taken off the staples list.
+  const { data: water } = await supabase.from('ingredients').select('id').eq('canonical_name', 'water').maybeSingle();
+  const alwaysAvailable = new Set([...staples.map(s => s.id), ...(water ? [water.id as string] : [])]);
+
+  const coverage = computeCoverage(normalized, pantry, units, alwaysAvailable);
   return { coverage, units, staples, pantry };
 }

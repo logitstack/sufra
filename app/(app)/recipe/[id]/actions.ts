@@ -147,3 +147,21 @@ export async function signOut() {
   await supabase.auth.signOut();
   redirect('/login');
 }
+
+/** Love (heart) a recipe or take the heart back. Works on shared recipes too. */
+export async function setLoved(recipeId: string, loved: boolean) {
+  const supabase = createServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+
+  const { error } = loved
+    ? await supabase.from('recipe_ratings').upsert(
+        { user_id: user.id, recipe_id: recipeId, loved: true, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id,recipe_id' }
+      )
+    : await supabase.from('recipe_ratings').delete().eq('user_id', user.id).eq('recipe_id', recipeId);
+  if (error) throw new Error(error.message);
+
+  revalidatePath('/library');
+  revalidatePath(`/recipe/${recipeId}`);
+}

@@ -5,6 +5,7 @@ import { createServerSupabase } from '@/app/lib/supabase-server';
 import { CATEGORY_LABEL } from '@/app/lib/types';
 import RecipeActions from './recipe-actions';
 import IngredientList from './ingredient-list';
+import LoveButton from '@/components/LoveButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,6 +23,13 @@ export default async function RecipeDetailPage({ params }: { params: { id: strin
   if (error || !recipe) notFound();
 
   const isOwner = recipe.user_id === user?.id;
+
+  const { data: rating } = await supabase
+    .from('recipe_ratings')
+    .select('loved')
+    .eq('recipe_id', recipe.id)
+    .eq('user_id', user?.id ?? '')
+    .maybeSingle();
 
   // Sort ingredients and steps
   const ingredients = (recipe.recipe_ingredients ?? []).sort(
@@ -60,6 +68,7 @@ export default async function RecipeDetailPage({ params }: { params: { id: strin
           sizes="(max-width: 768px) 100vw, 900px"
           initialClassName="text-8xl"
         />
+        <LoveButton recipeId={recipe.id} loved={!!rating?.loved} className="absolute top-4 right-4 w-10 h-10" />
         {!isOwner && (
           <div className="absolute top-4 left-4 px-3 py-1 bg-maroon-900/95 backdrop-blur-sm text-[10px] tracking-eyebrow uppercase text-beige-50 rounded-sm">
             Shared with you · Read only

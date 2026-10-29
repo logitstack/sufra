@@ -18,6 +18,7 @@ type RecipeRow = {
   image_path: string | null;
   notes: string | null;
   tags: string[];
+  loved?: boolean;
 };
 
 
@@ -32,7 +33,9 @@ export default async function LibraryPage() {
     .select('id, user_id, name, author, author_handle, category, cuisine, servings_yield, total_time_min, source_url, image_path, notes, tags')
     .order('created_at', { ascending: false });
 
-  const allRows: RecipeRow[] = (data ?? []) as RecipeRow[];
+  const { data: ratings } = await supabase.from('recipe_ratings').select('recipe_id').eq('user_id', user?.id ?? '').eq('loved', true);
+  const lovedIds = new Set((ratings ?? []).map(r => r.recipe_id as string));
+  const allRows: RecipeRow[] = ((data ?? []) as RecipeRow[]).map(r => ({ ...r, loved: lovedIds.has(r.id) }));
 
   const ownedRecipes: Recipe[] = allRows
     .filter(r => r.user_id === user?.id)
@@ -69,6 +72,7 @@ function rowToRecipe(row: RecipeRow): Recipe {
     image_path: row.image_path,
     notes: row.notes ?? undefined,
     tags: row.tags || [],
+    loved: row.loved,
     ingredients: [],
     steps: []
   };

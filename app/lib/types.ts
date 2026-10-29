@@ -26,6 +26,8 @@ export type Recipe = {
   total_time_min: number;
   source_url?: string;
   image_path: string | null;
+  /** The viewer hearted this recipe. */
+  loved?: boolean;
   notes?: string;
   tags: string[];
   ingredients: Ingredient[];

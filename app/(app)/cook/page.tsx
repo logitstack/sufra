@@ -6,6 +6,8 @@ import { loadCookData } from './data';
 import CookClient, { type RecipeCard } from './cook-client';
 
 export const dynamic = 'force-dynamic';
+// Suggestions search the web before answering.
+export const maxDuration = 120;
 
 function heldFor(days: number): string {
   if (days < 1) return 'today';

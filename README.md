@@ -167,7 +167,15 @@ When you click "Add recipe", three import options sit at the top of the page:
 - **Paste text**: drop any block of text. Instagram caption, email forward, blog excerpt. Goes to Claude with the same extraction prompt.
 - **From a photo**: take or upload a photo of a cookbook page, handwritten card, screenshot. Claude's vision reads it.
 
-In all three cases, the form fills in: name, author, category, cuisine, servings, time, ingredients with parsed quantities and units, steps, tags, source URL. You review and edit before saving.
+In all three cases, the form fills in: name, author, category, cuisine, servings, time, ingredients with parsed quantities and units, steps, tags, source URL. You review and edit before saving. Amounts accept fractions, mixed numbers and decimals ("1 1/2", "3/4", "0.75").
+
+### Editing and photos
+
+Every recipe you own has an **Edit** button that opens the same form with everything editable, including reordering ingredients and steps. Saving re-matches ingredients, and meal plans use the updated recipe.
+
+A recipe saved without a photo takes the photo from its source link (the page's JSON-LD image or og:image), copied into Supabase Storage. Recipes with no photo and no link show a plain panel with the dish's initial. On the library, **Get photos** fills in photos for existing recipes that have a link.
+
+Recipes display cups and spoons as cooking fractions ("1 1/2 cups", "1/3 tsp"), including after changing servings with the control above the ingredients.
 
 ### Library sorting
 
@@ -179,23 +187,28 @@ Units work in layers:
 
 - **Recipes** always show amounts exactly as entered. Nothing rewrites a recipe's units.
 - **Math** converts every amount into one base unit per ingredient: grams, or a count for things like eggs, onions and garlic cloves. Volume converts through each ingredient's density, containers ("1 can") through standard sizes in `ingredient_conversions`. You never see base units.
-- **The pantry** shows cooking units: tsp, tbsp, cups, grams, counts.
+- **The pantry** shows cooking units (tsp, tbsp, cups, grams, counts) for measured items, and have it / running low / out for status-tracked ones.
 - **The grocery list** shows whole packages, rounded up: "2 cans", "1 bag (1 kg)". Items the pantry already covers don't appear.
 
-When you generate a shopping list from a plan:
+When you tap **Generate grocery list** on a plan:
 
 1. Each recipe's ingredients are scaled by `(times_per_period × servings_per_time) / recipe.servings_yield`
 2. Every amount is converted to base units and summed per ingredient, so one ingredient is always one line
 3. Pantry amounts (also in base units) are subtracted
-4. The rest is shown in purchase units, grouped by store section
-5. If a size is unknown (say, "1 jar" of something new), the line reads "2 tbsp + 1 jar" and asks you once how much is in a jar. Your answer is saved for next time.
+4. A review screen opens with four sections: **To buy** (checked), **You may have something similar** (one Claude call suggests pantry items that could stand in; pick one or check the item to buy it), **Running low** (status-tracked staples marked low or out, needed or not), and **Already have** (collapsed)
+5. **OK** builds the final list from checked items, in purchase units, grouped by store section. A picked substitute is saved on the plan, and "I cooked this" deducts from it while that plan is running.
+6. If a size is unknown (say, "1 jar" of something new), the line reads "2 tbsp + 1 jar" and asks you once how much is in a jar. Your answer is saved for next time.
+
+### Tracking modes
+
+Spices, sauces, salt, oil, milk, eggs and similar staples are **status tracked**: the pantry only records have it, running low or out, and cooking never deducts them. Everything else is **measured**. New spices and condiments default to status tracking through their category (`ingredient_category_modes`); tap Edit on any pantry item to switch it. After "I cooked this", Sufra lists the status-tracked items the recipe used with quick running low / out buttons. Buying one (receipt, check-off, or adding it) sets it back to have it.
 
 Ingredient names from recipes and the pantry are matched to canonical ingredients through aliases first, then Claude for anything new. Claude also fills in a new ingredient's density, base unit and usual package size. Recipes keep the name as written.
 
 ### Pantry auto-updates
 
-- **When you check off a shopping list item**: Sufra asks how much you bought (prefilled with your usual size) and adds that to your pantry. **Check off only** skips the pantry.
-- **When you click "I cooked this" on a recipe**: ingredients are scaled to servings made and deducted from your pantry (floored at zero, never negative)
+- **When you check off a shopping list item**: Sufra asks how much you bought (prefilled with your usual size) and adds that to your pantry. **Check off only** skips the pantry. Status-tracked items skip the question and become have it.
+- **When you click "I cooked this" on a recipe**: measured ingredients are scaled to servings made and deducted from your pantry (floored at zero, never negative)
 - **Manual edits anytime**: tap any pantry item to edit its quantity, set or clear an expiration date, or delete it
 
 ### Receipts and quick entry
@@ -216,8 +229,11 @@ The **Cook** page compares every recipe you can see against your pantry, in base
 - **Can make now**: every ingredient is covered.
 - **Near misses**: one or two ingredients short, with a button that adds them to your open grocery list (or a new one).
 - Within each group, recipes using the items you've had longest come first.
-- **Ideas from Claude**: dishes outside your library built from what's on hand. Save one to open it in the normal add-recipe form.
-- **Always on hand**: staples (salt, water, cooking oil by default) never block a match. Edit the list on the same page.
+- Status-tracked items count as available unless marked out.
+- **Ideas from Claude**: describe what you want, or tap chips (dessert, soup, drinks...), and set servings, max time and how strictly to use the pantry. Claude Sonnet 5.5 searches the web for well-tested recipes and returns three halal suggestions (no pork, no alcohol in any form, no non-halal gelatin), shaped by the cuisines you cook and the recipes you've hearted. **Show 3 more** and follow-ups like "less sweet" build on the same request. Save one to open it in the normal add-recipe form, with its source link and tips kept.
+- **Always available**: water plus an editable list (salt and cooking oil by default) never block a match.
+
+Heart any recipe in the library or on its page to tell the suggestions what you love.
 
 ### Sharing
 

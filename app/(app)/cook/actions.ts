@@ -3,10 +3,10 @@
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { createServerSupabase } from '@/app/lib/supabase-server';
-import { claudeJson } from '@/app/lib/anthropic';
+import { claudeJson, WEB_SEARCH_TOOL } from '@/app/lib/anthropic';
 import { resolveIngredient } from '@/app/lib/ingredients';
 import { RecipeSchema, toExtractedRecipe, type ExtractedRecipe } from '@/app/lib/recipe-extractor';
-import { cookingDisplay, toBase } from '@/app/lib/units';
+import { cookingDisplay, pantryStatusOf, toBase } from '@/app/lib/units';
 import { loadCookData, loadStaples } from './data';
 
 async function requireUser(supabase: ReturnType<typeof createServerSupabase>) {
@@ -122,54 +122,138 @@ export async function removeStaple(ingredientId: string) {
 
 const SuggestionsSchema = z.object({
   suggestions: z.array(z.object({
-    why: z.string().describe('One short sentence on why this fits what is on hand'),
-    missing: z.array(z.string()).describe('Ingredients the cook would still need to buy, if any'),
+    why: z.string().describe('Two or three sentences on why this dish works and why it fits the request'),
+    tips: z.array(z.string()).describe('Practical tips: make-ahead options, what to watch for, how to tell it is done'),
+    source_url: z.string().nullable().describe('URL of the published recipe this is based on, or null'),
+    missing: z.array(z.string()).describe('Ingredients the cook would need to buy, if any'),
     recipe: RecipeSchema
   }))
 });
 
 export type Suggestion = {
   why: string;
+  tips: string[];
+  source_url: string | null;
   missing: string[];
   recipe: ExtractedRecipe;
 };
 
-const SUGGEST_SYSTEM = `You suggest home-cooking dishes for Sufra, a kitchen app, based on what is in the cook's pantry right now.
+export type PantryMode = 'stick' | 'few' | 'ignore';
 
-Suggest 4 dishes that are not already in their recipe library. Favor dishes that use what is on hand, especially the items held longest, and that need nothing or very little from the store. Respect the cuisines they already cook when it helps, and include at least one quick weeknight option.
+export type SuggestInput = {
+  /** What the cook asked for: "a dessert for a family gathering". */
+  request: string;
+  /** Quick-pick chips: dessert, breakfast, soup... */
+  kinds: string[];
+  servings: number | null;
+  maxMinutes: number | null;
+  pantryMode: PantryMode;
+  /** Follow-ups in order: "less sweet", "no oven". */
+  refinements: string[];
+  /** Dishes already shown, so "more" brings new ones. */
+  shown: Array<{ name: string; why: string }>;
+};
 
-Each suggestion carries a complete, cookable recipe: real quantities and units, clear numbered steps, a sensible servings_yield. Use author "Claude" and source_url null. Write plainly. Do not use em dashes.`;
+const SUGGEST_SYSTEM = `You are a skilled home cook helping a friend decide what to make, inside Sufra, a kitchen app. Recommend dishes the way you would in conversation: dishes you would actually stand behind, explained plainly.
 
-/** Ask Claude for dishes outside the library based on current pantry contents. */
-export async function suggestDishes(): Promise<Suggestion[]> {
+Every suggestion must be halal:
+- No pork or pork products (bacon, ham, lard, pancetta, prosciutto, pork gelatin, pork-based stock).
+- No alcohol in any form, even when it cooks off: no wine, beer, spirits, mirin, sake, cooking wine or sherry, and no alcohol-based extracts such as standard vanilla extract. Use alcohol-free vanilla, vanilla bean, or vanilla powder instead.
+- No gelatin unless it is labeled halal or plant-based (agar). Say which.
+- Meat and chicken are assumed to be bought halal; do not mention it unless relevant.
+
+Use web search to find well-tested published recipes from reliable cooks and sites, and base suggestions on them when they fit. When a suggestion is based on a published recipe, set source_url to that page and adapt it to the rules above. Otherwise set source_url null.
+
+For each suggestion:
+- why: a short note on why the dish works and why it fits what they asked for.
+- recipe: a complete, cookable recipe with exact quantities and units (use tsp, tbsp, cup, g, kg, oz, lb, ml, l, can, clove, bunch and so on, or null for a plain count), clear steps in order, a sensible servings_yield and total time. Use author "Claude" unless it closely follows a published author's recipe, then credit them. Put the source link in recipe.source_url too.
+- tips: two to four practical tips such as make-ahead and storage, what to watch for, or substitutions.
+- missing: what they would need to buy, based on their pantry. Empty if nothing.
+
+Return exactly 3 suggestions, none already in their library or already shown. Match their taste using the cuisines they cook and the recipes they love, without copying those recipes. Write plainly and do not use em dashes.`;
+
+/**
+ * Ask Claude for three dishes outside the library, shaped by the cook's
+ * request, their library, the recipes they love, and (depending on
+ * pantryMode) what's on hand. Each call is self-contained: refinements and
+ * the dishes already shown travel with the request, so "more" and follow-ups
+ * build on the conversation without replaying it.
+ */
+export async function suggestDishes(input: SuggestInput): Promise<Suggestion[]> {
   const supabase = createServerSupabase();
   const user = await requireUser(supabase);
 
-  const { coverage, units, staples, pantry } = await loadCookData(supabase, user.id);
+  const [{ coverage, units, staples, pantry }, { data: loved }] = await Promise.all([
+    loadCookData(supabase, user.id),
+    supabase.from('recipe_ratings').select('recipes(name)').eq('user_id', user.id).eq('loved', true)
+  ]);
+
   const stocked = pantry
-    .filter(p => p.quantity_on_hand > 0)
     .map(p => {
       const ing = units.get(p.ingredient_id);
       if (!ing) return null;
-      const base = toBase(p.quantity_on_hand, p.unit, ing);
-      const amount = base != null ? cookingDisplay(base, ing).text : `${p.quantity_on_hand} ${p.unit ?? ''}`.trim();
+      let amount: string | null;
+      if (ing.tracking_mode === 'status') {
+        const status = pantryStatusOf(p);
+        if (status === 'out') return null;
+        amount = status === 'low' ? 'running low' : 'have it';
+      } else {
+        if (p.quantity_on_hand <= 0) return null;
+        const base = toBase(p.quantity_on_hand, p.unit, ing);
+        amount = base != null ? cookingDisplay(base, ing).text : `${p.quantity_on_hand} ${p.unit ?? ''}`.trim();
+      }
       return { name: ing.name, amount, since: p.since };
     })
     .filter((p): p is { name: string; amount: string; since: string | null } => p !== null)
     .sort((a, b) => (a.since ?? '9999').localeCompare(b.since ?? '9999'));
 
-  if (stocked.length === 0) throw new Error('Add a few things to your pantry first');
+  // Cuisines they cook most, from the library.
+  const cuisineCounts = new Map<string, number>();
+  for (const c of coverage) cuisineCounts.set(c.recipe.cuisine, (cuisineCounts.get(c.recipe.cuisine) ?? 0) + 1);
+  const cuisines = Array.from(cuisineCounts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([c, n]) => `${c} (${n})`);
+  const lovedNames = ((loved ?? []) as unknown as Array<{ recipes: { name: string } | null }>)
+    .map(r => r.recipes?.name).filter(Boolean);
 
-  const cuisines = Array.from(new Set(coverage.map(c => c.recipe.cuisine))).slice(0, 10);
-  const prompt = [
-    'Pantry (oldest first):',
-    ...stocked.map(p => `- ${p.name}: ${p.amount}${p.since ? ` (since ${p.since})` : ''}`),
+  const pantryRule = {
+    stick: 'Use only what is in their pantry plus the always-available staples. missing must be empty.',
+    few: 'Lean on their pantry, especially the items held longest. Needing two or three things from the store is fine.',
+    ignore: 'Ignore the pantry; suggest whatever fits best. List everything they would need to buy in missing only if you can tell from the pantry below.'
+  }[input.pantryMode];
+
+  const ask = input.request.trim() || (input.kinds.length ? '' : 'Something good to cook this week.');
+  const lines = [
+    `What they want: ${[ask, input.kinds.length ? `Kind: ${input.kinds.join(', ')}` : ''].filter(Boolean).join('. ')}`,
+    input.servings ? `Servings: ${input.servings}` : '',
+    input.maxMinutes ? `Total time: ${input.maxMinutes} minutes or less` : '',
+    `Pantry: ${pantryRule}`,
+    ...input.refinements.map((r, i) => `Follow-up ${i + 1}: ${r}`),
     '',
-    `Always on hand: ${staples.map(s => s.name).join(', ') || 'none listed'}`,
-    `Cuisines they cook: ${cuisines.join(', ') || 'unknown'}`,
-    `Already in their library (do not suggest): ${coverage.map(c => c.recipe.name).join('; ') || 'nothing yet'}`
-  ].join('\n');
+    'Pantry (oldest first):',
+    ...(stocked.length ? stocked.map(p => `- ${p.name}: ${p.amount}${p.since ? ` (since ${p.since})` : ''}`) : ['- nothing recorded']),
+    `Always available: water, ${staples.map(s => s.name).join(', ') || 'nothing else listed'}`,
+    '',
+    `Cuisines they cook most: ${cuisines.join(', ') || 'unknown'}`,
+    `Recipes they love: ${lovedNames.join('; ') || 'none rated yet'}`,
+    `Already in their library (do not suggest): ${coverage.map(c => c.recipe.name).join('; ') || 'nothing yet'}`,
+    input.shown.length
+      ? `Already shown (do not repeat; ${input.refinements.length ? 'revise in the direction of the latest follow-up' : 'suggest different dishes'}):\n${input.shown.map(s => `- ${s.name}: ${s.why}`).join('\n')}`
+      : ''
+  ];
 
-  const reply = await claudeJson({ system: SUGGEST_SYSTEM, content: prompt, schema: SuggestionsSchema });
-  return reply.suggestions.map(s => ({ why: s.why, missing: s.missing, recipe: toExtractedRecipe(s.recipe, null) }));
+  const reply = await claudeJson({
+    system: SUGGEST_SYSTEM,
+    content: lines.filter(l => l !== '').join('\n'),
+    schema: SuggestionsSchema,
+    effort: 'medium',
+    tools: [WEB_SEARCH_TOOL]
+  });
+
+  return reply.suggestions.slice(0, 3).map(s => {
+    const source = s.source_url ?? s.recipe.source_url ?? null;
+    const recipe = toExtractedRecipe({ ...s.recipe, source_url: source }, source);
+    // Keep the tips with the saved recipe.
+    const tips = s.tips.map(t => `- ${t}`).join('\n');
+    recipe.notes = [recipe.notes, tips].filter(Boolean).join('\n\n') || null;
+    return { why: s.why, tips: s.tips, source_url: source, missing: s.missing, recipe };
+  });
 }

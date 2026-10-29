@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { fillMissingPhotos } from './actions';
+import LoveButton from '@/components/LoveButton';
 import RecipeImage from '@/components/RecipeImage';
 import { CATEGORY_LABEL, type Category, type Recipe } from '@/app/lib/types';
 
@@ -351,6 +352,7 @@ function RecipeCard({ recipe, delayIndex, shared }: { recipe: Recipe; delayIndex
             </span>
           )}
         </div>
+        <LoveButton recipeId={recipe.id} loved={!!recipe.loved} className="absolute top-3 right-3" />
         {recipe.total_time_min > 0 && (
           <div className="absolute bottom-3 right-3 px-2 py-0.5 bg-beige-50/95 backdrop-blur-sm text-[10px] tnum text-ink rounded-sm">
             {recipe.total_time_min} min
