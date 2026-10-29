@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import Image from 'next/image';
+import RecipeImage from '@/components/RecipeImage';
 import { notFound } from 'next/navigation';
 import { createServerSupabase } from '@/app/lib/supabase-server';
 import { CATEGORY_LABEL } from '@/app/lib/types';
@@ -7,8 +7,6 @@ import RecipeActions from './recipe-actions';
 import IngredientList from './ingredient-list';
 
 export const dynamic = 'force-dynamic';
-
-const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?auto=format&fit=crop&w=1600&q=80';
 
 export default async function RecipeDetailPage({ params }: { params: { id: string } }) {
   const supabase = createServerSupabase();
@@ -55,13 +53,12 @@ export default async function RecipeDetailPage({ params }: { params: { id: strin
       </div>
 
       <div className="relative aspect-[16/10] sm:aspect-[2/1] rounded-sm overflow-hidden bg-beige-100 shadow-card rise-in">
-        <Image
-          src={recipe.image_path || FALLBACK_IMAGE}
-          alt={recipe.name}
-          fill
+        <RecipeImage
+          src={recipe.image_path}
+          name={recipe.name}
           priority
           sizes="(max-width: 768px) 100vw, 900px"
-          className="object-cover"
+          initialClassName="text-8xl"
         />
         {!isOwner && (
           <div className="absolute top-4 left-4 px-3 py-1 bg-maroon-900/95 backdrop-blur-sm text-[10px] tracking-eyebrow uppercase text-beige-50 rounded-sm">

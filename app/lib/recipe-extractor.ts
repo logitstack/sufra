@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { claudeJson } from './anthropic';
 import { canonicalUnit, parseQuantity } from './units';
+import { findImageInHtml } from './recipe-photo';
 import type { Category } from './types';
 
 export type ExtractedRecipe = {
@@ -21,6 +22,8 @@ export type ExtractedRecipe = {
   tags: string[];
   ingredients: { quantity: number | null; unit: string | null; name: string; prep_note: string | null }[];
   steps: string[];
+  /** The source page's photo, when imported from a link. */
+  image_url: string | null;
 };
 
 export const RecipeSchema = z.object({
@@ -150,7 +153,8 @@ function normalizeSchemaOrg(node: Record<string, unknown>, sourceUrl: string): E
       ? node.keywords.split(',').map(s => s.trim().toLowerCase()).slice(0, 6)
       : [],
     ingredients,
-    steps
+    steps,
+    image_url: null
   };
 }
 
@@ -274,6 +278,7 @@ export function toExtractedRecipe(parsed: z.infer<typeof RecipeSchema>, sourceUr
     servings_yield: parsed.servings_yield > 0 ? Math.round(parsed.servings_yield) : 4,
     source_url: parsed.source_url ?? sourceUrl,
     tags: parsed.tags.slice(0, 6),
+    image_url: null,
     ingredients: parsed.ingredients.map(i => ({ ...i, unit: i.unit ? canonicalUnit(i.unit) || null : null }))
   };
 }
@@ -288,16 +293,18 @@ export async function extractFromUrl(url: string): Promise<ExtractedRecipe> {
   if (!res.ok) throw new Error(`Could not fetch URL (${res.status})`);
   const html = await res.text();
 
+  const image_url = findImageInHtml(html, url);
+
   // Try JSON-LD first
   const jsonLd = tryJsonLdExtraction(html, url);
   if (jsonLd && jsonLd.ingredients.length > 0 && jsonLd.steps.length > 0) {
-    return jsonLd;
+    return { ...jsonLd, image_url };
   }
 
   // Fallback: extract visible text and send to Claude
   const visibleText = stripHtmlToText(html);
   const truncated = visibleText.slice(0, 12000);  // Keep prompt size reasonable
-  return extractFromText(truncated, url);
+  return { ...(await extractFromText(truncated, url)), image_url };
 }
 
 function stripHtmlToText(html: string): string {

@@ -3,7 +3,7 @@
 import { useState, useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import Image from 'next/image';
+import RecipeImage from '@/components/RecipeImage';
 import { createPlan } from '../actions';
 import { CATEGORY_LABEL, type Category } from '@/app/lib/types';
 
@@ -24,7 +24,6 @@ type SelectedItem = {
   servings_per_time: number;
 };
 
-const FALLBACK = 'https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?auto=format&fit=crop&w=400&q=80';
 
 export default function NewPlanClient({ recipes }: { recipes: RecipeLite[] }) {
   const router = useRouter();
@@ -163,7 +162,7 @@ export default function NewPlanClient({ recipes }: { recipes: RecipeLite[] }) {
             {Array.from(selected.values()).map(item => (
               <div key={item.recipe.id} className="flex items-center gap-3 p-3 bg-white border border-beige-200 rounded-sm">
                 <div className="relative w-14 h-14 rounded-sm overflow-hidden bg-beige-100 flex-shrink-0">
-                  <Image src={item.recipe.image_path ?? FALLBACK} alt="" fill sizes="56px" className="object-cover" />
+                  <RecipeImage src={item.recipe.image_path} name={item.recipe.name} sizes="56px" initialClassName="text-2xl" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="font-display text-base text-maroon-900 truncate">{item.recipe.name}</p>
@@ -232,7 +231,7 @@ export default function NewPlanClient({ recipes }: { recipes: RecipeLite[] }) {
                   className={`text-left rounded-sm overflow-hidden transition group ${isSelected ? 'ring-2 ring-maroon-900 ring-offset-2 ring-offset-beige-50' : ''}`}
                 >
                   <div className="relative aspect-square bg-beige-100">
-                    <Image src={r.image_path ?? FALLBACK} alt={r.name} fill sizes="200px" className="object-cover" />
+                    <RecipeImage src={r.image_path} name={r.name} sizes="200px" initialClassName="text-5xl" />
                     {isSelected && (
                       <div className="absolute top-2 right-2 w-7 h-7 rounded-full bg-maroon-900 flex items-center justify-center">
                         <svg viewBox="0 0 24 24" className="w-4 h-4 text-beige-50" fill="none" stroke="currentColor" strokeWidth="3"><path d="m5 12 5 5L20 7" /></svg>

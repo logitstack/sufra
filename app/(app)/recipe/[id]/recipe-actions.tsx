@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { shareRecipe, deleteRecipe, forkRecipe } from './actions';
 import { cookRecipe, setPantryItemStatus, type CookedStatusItem } from '@/app/(app)/pantry/actions';
@@ -111,6 +112,16 @@ export default function RecipeActions({
               </svg>
               I cooked this
             </button>
+            <Link
+              href={`/recipe/${recipeId}/edit`}
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-white border border-beige-200 text-ink rounded-sm hover:border-maroon-300 transition text-sm"
+            >
+              <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 20h9" />
+                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+              </svg>
+              Edit
+            </Link>
             <button
               onClick={() => setShareOpen(true)}
               className="inline-flex items-center gap-2 px-5 py-2.5 bg-white border border-beige-200 text-ink rounded-sm hover:border-maroon-300 transition text-sm"

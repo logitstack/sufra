@@ -25,7 +25,7 @@ export type Recipe = {
   servings_yield: number;
   total_time_min: number;
   source_url?: string;
-  image_path: string;
+  image_path: string | null;
   notes?: string;
   tags: string[];
   ingredients: Ingredient[];

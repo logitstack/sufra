@@ -2,7 +2,9 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import Image from 'next/image';
+import { useRouter } from 'next/navigation';
+import { fillMissingPhotos } from './actions';
+import RecipeImage from '@/components/RecipeImage';
 import { CATEGORY_LABEL, type Category, type Recipe } from '@/app/lib/types';
 
 type ViewMode = 'cuisine' | 'category' | 'all';
@@ -10,10 +12,12 @@ type ViewMode = 'cuisine' | 'category' | 'all';
 const CATEGORIES: Category[] = ['meat', 'vegetarian', 'baked_goods', 'desserts', 'drinks'];
 
 export default function LibraryClient({
+  photoless,
   ownedRecipes,
   sharedRecipes,
   hasError
 }: {
+  photoless: number;
   ownedRecipes: Recipe[];
   sharedRecipes: Recipe[];
   hasError: boolean;
@@ -77,6 +81,7 @@ export default function LibraryClient({
             </p>
           </div>
         </div>
+        {photoless > 0 && <FindPhotos count={photoless} />}
       </section>
 
       {hasError && (
@@ -219,6 +224,48 @@ function groupRecipes(recipes: Recipe[], mode: ViewMode) {
     .map(c => ({ key: CATEGORY_LABEL[c], recipes: groups.get(c)! }));
 }
 
+function FindPhotos({ count }: { count: number }) {
+  const router = useRouter();
+  const [running, setRunning] = useState(false);
+  const [message, setMessage] = useState('');
+
+  async function run() {
+    setRunning(true); setMessage('');
+    let found = 0;
+    let skip: string[] = [];
+    try {
+      // Work through the recipes a batch at a time.
+      for (;;) {
+        const result = await fillMissingPhotos(skip);
+        found += result.found;
+        skip = [...skip, ...result.missed];
+        router.refresh();
+        if (result.remaining === 0 || result.found + result.missed.length === 0) break;
+      }
+      setMessage(skip.length
+        ? `Found ${found} ${found === 1 ? 'photo' : 'photos'}. ${skip.length} ${skip.length === 1 ? 'link has' : 'links have'} no photo; you can add one by editing the recipe.`
+        : `Found ${found} ${found === 1 ? 'photo' : 'photos'}.`);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Could not get photos');
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div className="mt-6 flex flex-wrap items-center gap-3 p-3 bg-maroon-50 border border-maroon-100 rounded-sm text-sm">
+      <p className="flex-1 min-w-[200px] text-maroon-900">
+        {message || `${count} ${count === 1 ? 'recipe has' : 'recipes have'} no photo. Sufra can use the photo from each recipe's link.`}
+      </p>
+      {!message && (
+        <button onClick={run} disabled={running} className="px-4 py-2 bg-maroon-900 text-beige-50 rounded-sm hover:bg-maroon-700 transition text-sm font-medium disabled:opacity-50">
+          {running ? 'Finding photos…' : 'Get photos'}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ViewToggle({ children, active, onClick }: { children: React.ReactNode; active: boolean; onClick: () => void }) {
   return (
     <button
@@ -286,12 +333,12 @@ function RecipeCard({ recipe, delayIndex, shared }: { recipe: Recipe; delayIndex
   return (
     <Link href={`/recipe/${recipe.id}`} className={`group block rise-in delay-${delayIndex}`}>
       <div className="relative aspect-[4/5] overflow-hidden rounded-sm bg-beige-100 mb-3 shadow-card group-hover:shadow-card-hover transition-shadow">
-        <Image
+        <RecipeImage
           src={recipe.image_path}
-          alt={recipe.name}
-          fill
+          name={recipe.name}
           sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
           className="object-cover transition-transform duration-700 group-hover:scale-[1.04]"
+          initialClassName="text-7xl"
         />
         <div className="absolute inset-0 bg-gradient-to-t from-maroon-950/40 via-transparent to-transparent" />
         <div className="absolute top-3 left-3 flex items-center gap-1.5">

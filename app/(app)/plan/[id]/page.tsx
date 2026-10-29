@@ -1,13 +1,12 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import Image from 'next/image';
+import RecipeImage from '@/components/RecipeImage';
 import { createServerSupabase } from '@/app/lib/supabase-server';
 import { CATEGORY_LABEL, type Category } from '@/app/lib/types';
 import PlanActions from './plan-actions';
 
 export const dynamic = 'force-dynamic';
 
-const FALLBACK = 'https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?auto=format&fit=crop&w=400&q=80';
 
 export default async function PlanDetailPage({ params }: { params: { id: string } }) {
   const supabase = createServerSupabase();
@@ -76,7 +75,7 @@ export default async function PlanDetailPage({ params }: { params: { id: string 
             className="flex items-center gap-4 p-4 bg-white border border-beige-200 rounded-sm hover:border-maroon-300 transition group"
           >
             <div className="relative w-16 h-16 rounded-sm overflow-hidden bg-beige-100 flex-shrink-0">
-              <Image src={item.recipes.image_path ?? FALLBACK} alt="" fill sizes="64px" className="object-cover" />
+              <RecipeImage src={item.recipes.image_path} name={item.recipes.name} sizes="64px" initialClassName="text-2xl" />
             </div>
             <div className="flex-1 min-w-0">
               <p className="font-display text-lg text-maroon-900 truncate group-hover:text-maroon-700 transition">{item.recipes.name}</p>

@@ -20,7 +20,6 @@ type RecipeRow = {
   tags: string[];
 };
 
-const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?auto=format&fit=crop&w=800&q=80';
 
 export default async function LibraryPage() {
   const supabase = createServerSupabase();
@@ -43,8 +42,12 @@ export default async function LibraryPage() {
     .filter(r => r.user_id !== user?.id)
     .map(rowToRecipe);
 
+  // Owned recipes with no photo whose source link might have one.
+  const photoless = allRows.filter(r => r.user_id === user?.id && !r.image_path && r.source_url).length;
+
   return (
     <LibraryClient
+      photoless={photoless}
       ownedRecipes={ownedRecipes}
       sharedRecipes={sharedRecipes}
       hasError={!!error}
@@ -63,7 +66,7 @@ function rowToRecipe(row: RecipeRow): Recipe {
     servings_yield: row.servings_yield,
     total_time_min: row.total_time_min ?? 0,
     source_url: row.source_url ?? undefined,
-    image_path: row.image_path || FALLBACK_IMAGE,
+    image_path: row.image_path,
     notes: row.notes ?? undefined,
     tags: row.tags || [],
     ingredients: [],
